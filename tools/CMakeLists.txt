@@ -41,10 +41,6 @@ add_subdirectory(src/service)
 add_subdirectory(src/jsoncpp)
 add_subdirectory(src/half)
 
-# vts libraries
-add_subdirectory(src/vts-libs)
-
+# vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
-
-# force build of vts tool
-add_custom_target(.vts ALL DEPENDS vts vts02vts vts2vts ts2vts0 vts0)
+add_subdirectory(src/vts-libs)
