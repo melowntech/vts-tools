@@ -31,3 +31,6 @@
 [submodule "externals/vts-libs"]
 	path = externals/vts-libs
 	url = ../vts-libs
+[submodule "externals/geometry"]
+	path = externals/geometry
+	url = ../../lib/geometry
