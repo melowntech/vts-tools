@@ -1,0 +1,33 @@
+[submodule "externals/dbglog"]
+	path = externals/dbglog
+	url = ../../lib/dbglog
+[submodule "externals/utility"]
+	path = externals/utility
+	url = ../../lib/utility
+[submodule "externals/buildsys/common"]
+	path = externals/buildsys/common
+	url = ../../buildsys/common
+[submodule "externals/buildsys/cmake"]
+	path = externals/buildsys/cmake
+	url = ../../buildsys/cmake
+[submodule "externals/geo"]
+	path = externals/geo
+	url = ../../lib/geo
+[submodule "externals/half"]
+	path = externals/half
+	url = ../../3rdparty/half
+[submodule "externals/imgproc"]
+	path = externals/imgproc
+	url = ../../lib/imgproc
+[submodule "externals/jsoncpp"]
+	path = externals/jsoncpp
+	url = ../../3rdparty/jsoncpp
+[submodule "externals/math"]
+	path = externals/math
+	url = ../../lib/math
+[submodule "externals/service"]
+	path = externals/service
+	url = ../../lib/service
+[submodule "externals/vts-libs"]
+	path = externals/vts-libs
+	url = ../vts-libs
