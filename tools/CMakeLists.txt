@@ -41,7 +41,11 @@ add_subdirectory(src/geo)
 add_subdirectory(src/service)
 add_subdirectory(src/jsoncpp)
 add_subdirectory(src/half)
+add_subdirectory(src/tinyxml2)
 
 # vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
 add_subdirectory(src/vts-libs)
+
+# tools
+add_subdirectory(src/tools)
