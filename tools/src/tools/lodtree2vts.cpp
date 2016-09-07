@@ -11,14 +11,19 @@
 #include "../vts-libs/vts.hpp"
 #include "../vts-libs/registry/po.hpp"
 
+#include "../tinyxml2/tinyxml2.h"
+
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
 namespace vts = vadstena::vts;
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
+namespace xml = tinyxml2;
 
 namespace {
-
 
 class LodTree2Vts : public service::Cmdline
 {
@@ -84,10 +89,28 @@ usage
     return false;
 }
 
+/*void testAssImp(const fs::path &path)
+{
+    Assimp::Importer imp;
+
+    const aiScene *scene = imp.ReadFile(path.native(), 0);
+
+    if (!scene) {
+        LOGTHROW(err3, std::runtime_error)
+            << "Error loading " << path << ": " << imp.GetErrorString();
+    }
+
+    LOG(info2) << "# vertices: " << scene->mMeshes[0]->mNumVertices;
+    LOG(info2) << "# faces: " << scene->mMeshes[0]->mNumFaces;
+}*/
+
 
 int LodTree2Vts::run()
 {
+    //testAssImp("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/Tile_+000_+006/Tile_+000_+006_L14_0.dae");
 
+    xml::XMLDocument doc;
+    doc.LoadFile("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/LODTreeExport.xml");
 
     // all done
     LOG(info4) << "All done.";
