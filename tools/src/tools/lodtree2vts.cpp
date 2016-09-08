@@ -16,6 +16,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 
+#include <opencv2/highgui/highgui.hpp>
+
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
 namespace vts = vadstena::vts;
@@ -117,7 +119,6 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir)
     center(2) = getDoubleAttr(ctr, "z");
 
     modelPath = dir / getElement(node, "ModelPath")->GetText();
-    LOG(info3) << modelPath;
 
     // load all children
     std::string strNode("Node");
@@ -205,7 +206,7 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
     cmdline.add_options()
         ("input", po::value(&input_)->required()
-         , "Path to input (vts0) tile set.")
+         , "Path to LODTreeExport.xml input file.")
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("overwrite", "Existing tile set gets overwritten if set.")
@@ -251,9 +252,93 @@ usage
 }*/
 
 
+// separated LOD levels from a LodTreeExport
+typedef std::vector<std::vector<const LodTreeNode*> > Levels;
+
+void getLevelsRecursive(const LodTreeNode &node, Levels &levels, unsigned depth)
+{
+    while (levels.size() <= depth) {
+        levels.emplace_back();
+    }
+    levels[depth].push_back(&node);
+
+    for (const auto &ch : node.children) {
+        getLevelsRecursive(ch, levels, depth+1);
+    }
+}
+
+Levels getLevels(const LodTreeExport &lte)
+{
+    Levels levels;
+    for (const auto& block : lte.blocks) {
+        getLevelsRecursive(block, levels, 0);
+    }
+    return levels;
+}
+
+math::Point3 point3(const aiVector3D &vec)
+{
+    return {vec.x, vec.y, vec.z};
+}
+
+double calcTexArea(const aiMesh* mesh)
+{
+    double area = 0.0;
+    if (mesh->GetNumUVChannels())
+    {
+        for (unsigned f = 0; f < mesh->mNumFaces; f++)
+        {
+            aiFace &face = mesh->mFaces[f];
+            assert(face.mNumIndices == 3);
+
+            math::Point3 a(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
+            math::Point3 b(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
+            math::Point3 c(point3(mesh->mTextureCoords[0][face.mIndices[2]]));
+
+            area += 0.5*norm_2(math::crossProduct(b - a, c - a));
+        }
+    }
+    return area;
+}
+
 int LodTree2Vts::run()
 {
     //testAssImp("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/Tile_+000_+006/Tile_+000_+006_L14_0.dae");
+
+    LodTreeExport lte(input_);
+
+    Levels levels(getLevels(lte));
+
+    for (unsigned i = 0; i < levels.size(); i++)
+    {
+        double texArea = 0.0;
+        for (const LodTreeNode* node : levels[i])
+        {
+            LOG(info2) << "Loading model " << node->modelPath;
+
+            Assimp::Importer imp;
+            const aiScene *scene = imp.ReadFile(node->modelPath.native(), 0);
+
+            for (unsigned m = 0; m < scene->mNumMeshes; m++)
+            {
+                aiMesh *mesh = scene->mMeshes[m];
+                aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
+
+                aiString texFile;
+                mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
+                fs::path texPath(node->modelPath.parent_path() / texFile.C_Str());
+
+                cv::Mat image(cv::imread(texPath.native()));
+                double texSize = image.rows * image.cols;
+
+                //LOG(info3) << texPath << " " << image.cols << "x" << image.rows;
+
+                texArea += calcTexArea(mesh) * texSize;
+            }
+        }
+
+        LOG(info3) << "Level " << i+13 << ": area " << texArea;
+    }
 
     // all done
     LOG(info4) << "All done.";
@@ -266,7 +351,5 @@ int LodTree2Vts::run()
 
 int main(int argc, char *argv[])
 {
-    LodTreeExport lte("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/LODTreeExport.xml");
-
     return LodTree2Vts()(argc, argv);
 }
