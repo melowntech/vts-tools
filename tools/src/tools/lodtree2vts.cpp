@@ -25,6 +25,152 @@ namespace xml = tinyxml2;
 
 namespace {
 
+//// LodTreeExport.xml parse ///////////////////////////////////////////////////
+
+struct LodTreeNode
+{
+    double radius, minRange;
+    math::Point3 center;
+    fs::path modelPath;
+    std::vector<LodTreeNode> children;
+
+    LodTreeNode(xml::XMLElement *elem, const fs::path &dir);
+};
+
+struct LodTreeExport
+{
+    std::string srs;
+    math::Point3 origin;
+    std::vector<LodTreeNode> blocks;
+
+    LodTreeExport(const fs::path &xmlPath);
+};
+
+
+xml::XMLElement* getElement(xml::XMLNode *node, const char* elemName)
+{
+    xml::XMLElement* elem = node->FirstChildElement(elemName);
+    if (!elem) {
+        LOGTHROW(err3, std::runtime_error)
+            << "XML element \"" << elemName << "\" not found.";
+    }
+    return elem;
+}
+
+void errorAttrNotFound(xml::XMLElement *elem, const char* attrName)
+{
+    LOGTHROW(err3, std::runtime_error)
+        << "XML attribute \"" << attrName
+        << "\" not found in element \"" << elem->Name() << "\".";
+}
+
+const char* getTextAttr(xml::XMLElement *elem, const char* attrName)
+{
+    const char* text = elem->Attribute(attrName);
+    if (!text) {
+        errorAttrNotFound(elem, attrName);
+    }
+    return text;
+}
+
+double getDoubleAttr(xml::XMLElement *elem, const char* attrName)
+{
+    double a;
+    if (elem->QueryDoubleAttribute(attrName, &a) == xml::XML_NO_ATTRIBUTE) {
+        errorAttrNotFound(elem, attrName);
+    }
+    return a;
+}
+
+xml::XMLElement* loadLodTreeXml(const fs::path &fname, xml::XMLDocument &doc)
+{
+    auto err = doc.LoadFile(fname.native().c_str());
+    if (err != xml::XML_SUCCESS) {
+        LOGTHROW(err3, std::runtime_error)
+            << "Error loading " << fname << ": " << doc.ErrorName();
+    }
+
+    auto *root = getElement(&doc, "LODTreeExport");
+
+    double version = getDoubleAttr(root, "version");
+    if (version > 1.1 + 1e-12) {
+        LOGTHROW(err3, std::runtime_error)
+            << fname << ": unsupported format version (" << version << ").";
+    }
+
+    return root;
+}
+
+
+LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir)
+{
+    int ok = xml::XML_SUCCESS;
+    if (getElement(node, "Radius")->QueryDoubleText(&radius) != ok ||
+        getElement(node, "MinRange")->QueryDoubleText(&minRange) != ok)
+    {
+        LOGTHROW(err3, std::runtime_error) << "Error reading node data";
+    }
+
+    auto *ctr = getElement(node, "Center");
+    center(0) = getDoubleAttr(ctr, "x");
+    center(1) = getDoubleAttr(ctr, "y");
+    center(2) = getDoubleAttr(ctr, "z");
+
+    modelPath = dir / getElement(node, "ModelPath")->GetText();
+    LOG(info3) << modelPath;
+
+    // load all children
+    std::string strNode("Node");
+    for (auto *elem = node->FirstChildElement();
+         elem;
+         elem = elem->NextSiblingElement())
+    {
+        if (strNode == elem->Name())
+        {
+            children.emplace_back(elem, dir);
+        }
+    }
+}
+
+
+LodTreeExport::LodTreeExport(const fs::path &xmlPath)
+{
+    xml::XMLDocument doc;
+    auto *root = loadLodTreeXml(xmlPath, doc);
+
+    srs = getElement(root, "SRS")->GetText();
+
+    auto *local = getElement(root, "Local");
+    origin(0) = getDoubleAttr(local, "x");
+    origin(1) = getDoubleAttr(local, "y");
+    origin(2) = getDoubleAttr(local, "z");
+
+    // load all blocks ("Tiles")
+    std::string strTile("Tile");
+    for (auto *elem = root->FirstChildElement();
+         elem;
+         elem = elem->NextSiblingElement())
+    {
+        if (strTile == elem->Name())
+        {
+            fs::path path(getTextAttr(elem, "path"));
+            if (path.is_relative()) {
+                path = xmlPath.parent_path() / path;
+            }
+            LOG(info3) << "Loading block " << path << ".";
+
+            xml::XMLDocument tileDoc;
+            auto *tileRoot = loadLodTreeXml(path, tileDoc);
+            auto *rootNode = getElement(tileRoot, "Tile");
+
+            blocks.emplace_back(rootNode, path.parent_path());
+        }
+    }
+}
+
+
+//// utility main //////////////////////////////////////////////////////////////
+
 class LodTree2Vts : public service::Cmdline
 {
 public:
@@ -109,9 +255,6 @@ int LodTree2Vts::run()
 {
     //testAssImp("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/Tile_+000_+006/Tile_+000_+006_L14_0.dae");
 
-    xml::XMLDocument doc;
-    doc.LoadFile("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/LODTreeExport.xml");
-
     // all done
     LOG(info4) << "All done.";
     return EXIT_SUCCESS;
@@ -123,5 +266,7 @@ int LodTree2Vts::run()
 
 int main(int argc, char *argv[])
 {
+    LodTreeExport lte("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/LODTreeExport.xml");
+
     return LodTree2Vts()(argc, argv);
 }
