@@ -3,6 +3,9 @@
 
 #include "dbglog/dbglog.hpp"
 
+#include "geometry/mesh.hpp"
+#include "geometry/meshop.hpp"
+
 #include "utility/buildsys.hpp"
 #include "utility/gccversion.hpp"
 
@@ -158,7 +161,7 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
             if (path.is_relative()) {
                 path = xmlPath.parent_path() / path;
             }
-            LOG(info3) << "Loading block " << path << ".";
+            LOG(info3) << "Parsing block " << path << ".";
 
             xml::XMLDocument tileDoc;
             auto *tileRoot = loadLodTreeXml(path, tileDoc);
@@ -236,23 +239,8 @@ usage
     return false;
 }
 
-/*void testAssImp(const fs::path &path)
-{
-    Assimp::Importer imp;
 
-    const aiScene *scene = imp.ReadFile(path.native(), 0);
-
-    if (!scene) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading " << path << ": " << imp.GetErrorString();
-    }
-
-    LOG(info2) << "# vertices: " << scene->mMeshes[0]->mNumVertices;
-    LOG(info2) << "# faces: " << scene->mMeshes[0]->mNumFaces;
-}*/
-
-
-// separated LOD levels from a LodTreeExport
+// LodTreeNodes stratified into levels (by tree depth)
 typedef std::vector<std::vector<const LodTreeNode*> > Levels;
 
 void getLevelsRecursive(const LodTreeNode &node, Levels &levels, unsigned depth)
@@ -303,13 +291,11 @@ double calcTexArea(const aiMesh* mesh)
 
 int LodTree2Vts::run()
 {
-    //testAssImp("/mnt/media/vadstena/cowi/2016-03-18/Production_2/Data/Tile_+000_+006/Tile_+000_+006_L14_0.dae");
-
     LodTreeExport lte(input_);
 
     Levels levels(getLevels(lte));
 
-    for (unsigned i = 0; i < levels.size(); i++)
+    /*for (unsigned i = 0; i < levels.size(); i++)
     {
         double texArea = 0.0;
         for (const LodTreeNode* node : levels[i])
@@ -338,6 +324,86 @@ int LodTree2Vts::run()
         }
 
         LOG(info3) << "Level " << i+13 << ": area " << texArea;
+    }*/
+
+
+    int l = 0;
+    for (const auto &level : levels)
+    {
+        geometry::Mesh levelMesh;
+        std::vector<int> faceValue;
+
+        int modelCount = 0;
+        for (const LodTreeNode* node : level)
+        {
+            LOG(info2) << "Loading model " << node->modelPath;
+
+            Assimp::Importer imp;
+            const aiScene *scene = imp.ReadFile(node->modelPath.native(), 0);
+
+            for (unsigned m = 0; m < scene->mNumMeshes; m++)
+            {
+                aiMesh *mesh = scene->mMeshes[m];
+
+                unsigned base = levelMesh.vertices.size();
+                for (unsigned i = 0; i < mesh->mNumVertices; i++) {
+                    auto vert(point3(mesh->mVertices[i]));
+                    levelMesh.vertices.push_back(vert + node->center);
+                }
+
+                for (unsigned i = 0; i < mesh->mNumFaces; i++) {
+                    aiFace *f = &(mesh->mFaces[i]);
+                    assert(f->mNumIndices == 3);
+                    levelMesh.faces.emplace_back(
+                        base + f->mIndices[0],
+                        base + f->mIndices[1],
+                        base + f->mIndices[2]);
+
+                    faceValue.push_back(modelCount);
+                }
+            }
+
+            modelCount++;
+        }
+
+        char name[100];
+        sprintf(name, "level%02d.ply", (l++) + 13);
+
+#if 1
+        LOG(info3) << "Writing " << name;
+
+        std::ofstream out(name);
+        out.setf(std::ios::scientific, std::ios::floatfield);
+
+        out << "ply\n"
+            << "format ascii 1.0\n"
+            << "element vertex " << levelMesh.vertices.size() << '\n'
+            << "property float x\n"
+            << "property float y\n"
+            << "property float z\n"
+            << "element face " << levelMesh.faces.size() << '\n'
+            << "property list uchar int vertex_indices\n"
+            << "property uchar red\n"
+            << "property uchar green\n"
+            << "property uchar blue\n"
+            << "end_header\n";
+
+        for (const auto &vertex : levelMesh.vertices)
+        {
+            out << vertex(0) << ' ' << vertex(1) << ' '  << vertex(2) << '\n';
+        }
+
+        unsigned fidx = 0;
+        for (const auto &face : levelMesh.faces)
+        {
+            out << "3 " << face.a << ' ' << face.b << ' ' << face.c << ' ';
+            srand(faceValue[fidx++]+1);
+            out << rand()%256 << ' ' << rand()%256 << ' ' << rand()%256 << '\n';
+        }
+
+#else
+        geometry::saveAsPly(levelMesh, name);
+#endif
     }
 
     // all done
