@@ -12,6 +12,9 @@
 #include "service/cmdline.hpp"
 
 #include "../vts-libs/vts.hpp"
+#include "../vts-libs/vts/encoder.hpp"
+#include "../vts-libs/vts/meshop.hpp"
+#include "../vts-libs/vts/csconvertor.hpp"
 #include "../vts-libs/registry/po.hpp"
 
 #include "../tinyxml2/tinyxml2.h"
@@ -175,6 +178,10 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
 
 //// utility main //////////////////////////////////////////////////////////////
 
+struct Config {
+    std::string referenceFrame;
+};
+
 class LodTree2Vts : public service::Cmdline
 {
 public:
@@ -199,6 +206,10 @@ private:
 
     fs::path input_;
     fs::path output_;
+
+    vts::CreateMode createMode_;
+
+    Config config_;
 };
 
 void LodTree2Vts::configuration(po::options_description &cmdline
@@ -213,6 +224,9 @@ void LodTree2Vts::configuration(po::options_description &cmdline
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("overwrite", "Existing tile set gets overwritten if set.")
+
+        ("referenceFrame", po::value(&config_.referenceFrame)->required()
+         , "Output reference frame.")
         ;
 
     pd.add("input", 1);
@@ -224,6 +238,10 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 void LodTree2Vts::configure(const po::variables_map &vars)
 {
     vr::registryConfigure(vars);
+
+    createMode_ = (vars.count("overwrite")
+                   ? vts::CreateMode::overwrite
+                   : vts::CreateMode::failIfExists);
 
 }
 
@@ -240,28 +258,333 @@ usage
 }
 
 
-// LodTreeNodes stratified into levels (by tree depth)
-typedef std::vector<std::vector<const LodTreeNode*> > Levels;
+//// tile mapping //////////////////////////////////////////////////////////////
 
-void getLevelsRecursive(const LodTreeNode &node, Levels &levels, unsigned depth)
+struct InputTile
 {
-    while (levels.size() <= depth) {
-        levels.emplace_back();
-    }
-    levels[depth].push_back(&node);
+    int id;
+    int depth;  // depth in input LodTree
+    int dstLod; // output (vts) LOD
 
-    for (const auto &ch : node.children) {
-        getLevelsRecursive(ch, levels, depth+1);
+    const LodTreeNode *node;
+    math::Extents2 extents; // tile extents in LodTree
+    //math::Size2 textureSize;
+
+    typedef std::vector<InputTile> list;
+
+    InputTile(int id, int depth, const LodTreeNode* node)
+        : id(id), depth(depth), dstLod(), node(node), extents()
+    {}
+};
+
+
+vts::TileRange::point_type
+tiled(const math::Size2f &ts, const math::Point2 &origin
+      , const math::Point2 &p)
+{
+    math::Point2 local(p - origin);
+    return vts::TileRange::point_type(local(0) / ts.width
+                                      , -local(1) / ts.height);
+}
+
+vts::TileRange tileRange(const vr::ReferenceFrame::Division::Node &node
+                         , vts::Lod localLod, const math::Points2 &points
+                         , double margin)
+{
+    const auto ts(vts::tileSize(node.extents, localLod));
+    // NB: origin is in upper-left corner and Y grows down
+    const auto origin(math::ul(node.extents));
+
+    math::Size2f isize(ts.width * margin, ts.height * margin);
+    std::array<math::Point2, 4> inflates{{
+            { -isize.width, +isize.height }
+            , { +isize.width, +isize.height }
+            , { +isize.width, -isize.height }
+            , { -isize.width, -isize.height }
+        }};
+
+    vts::TileRange r(math::InvalidExtents{});
+
+    for (const auto &p : points) {
+        for (const auto &inflate : inflates) {
+            update(r, tiled(ts, origin, p + inflate));
+        }
+    }
+
+    return r;
+}
+
+template <typename Op>
+void forEachTile(const vr::ReferenceFrame &referenceFrame
+                 , vts::Lod lod, const vts::TileRange &tileRange
+                 , Op op)
+{
+    typedef vts::TileRange::value_type Index;
+    for (Index j(tileRange.ll(1)), je(tileRange.ur(1)); j <= je; ++j) {
+        for (Index i(tileRange.ll(0)), ie(tileRange.ur(0)); i <= ie; ++i) {
+            op(vts::NodeInfo(referenceFrame, vts::TileId(lod, i, j)));
+        }
     }
 }
 
-Levels getLevels(const LodTreeExport &lte)
+template <typename Op>
+void rasterizeTiles(const vr::ReferenceFrame &referenceFrame
+                    , const vr::ReferenceFrame::Division::Node &rootNode
+                    , vts::Lod lod, const vts::TileRange &tileRange
+                    , Op op)
 {
-    Levels levels;
-    for (const auto& block : lte.blocks) {
-        getLevelsRecursive(block, levels, 0);
+    // process tile range
+    forEachTile(referenceFrame, lod, tileRange
+                , [&](const vts::NodeInfo &ni)
+    {
+        LOG(info1)
+            << std::fixed << "dst tile: "
+            << ni.nodeId() << ", " << ni.extents();
+
+        // TODO: check for incidence with Q; NB: clip margin must be taken into
+        // account
+
+        // check for root
+        if (ni.subtree().root().id == rootNode.id) {
+            op(vts::tileId(ni.nodeId()));
+        }
+    });
+}
+
+math::Points2 projectCorners(const vr::ReferenceFrame::Division::Node &node
+                             , const vts::CsConvertor &conv
+                             , const math::Points2 &src)
+{
+    math::Points2 dst;
+    try {
+        for (const auto &c : src) {
+            dst.push_back(conv(c));
+            LOG(info1) << std::fixed << "corner: "
+                       << c << " -> " << dst.back();
+            if (!inside(node.extents, dst.back())) {
+                // projected dst tile cannot fit inside this node's
+                // extents -> ignore
+                return {};
+            }
+        }
     }
-    return levels;
+    catch (std::exception) {
+        // whole tile cannot be projected -> ignore
+        return {};
+    }
+
+    // OK, we could convert whole tile into this reference system
+    return dst;
+}
+
+
+class TileMapping : boost::noncopyable
+{
+public:
+    TileMapping(const std::vector<InputTile> inputTiles
+                , const geo::SrsDefinition &inputSRS
+                , const vr::ReferenceFrame &dstRf
+                , double margin)
+    {
+        for (const auto &tile : inputTiles)
+        {
+            const auto &srcExtents(tile.extents);
+            const math::Points2 srcCorners = {
+                ul(srcExtents), ur(srcExtents), lr(srcExtents), ll(srcExtents)
+            };
+
+            // for each destination division node
+            for (const auto &item : dstRf.division.nodes) {
+                const auto &node(item.second);
+                if (!node.valid()) { continue; }
+
+                const vts::CsConvertor csconv(inputSRS, node.srs);
+                auto dstCorners(projectCorners(node, csconv, srcCorners));
+
+                // ignore tiles that cannot be transformed
+                if (dstCorners.empty()) { continue; }
+
+                vts::Lod dstLocalLod(tile.dstLod - node.id.lod);
+
+                // generate tile range from bounding box of projected corners
+                auto tr(tileRange(node, dstLocalLod, dstCorners, margin));
+                LOG(info1) << "tile range: " << tr;
+
+                // TODO: add margin
+                rasterizeTiles(dstRf, node, tile.dstLod, tr
+                               , [&](const vts::TileId &id)
+                {
+                    sourceInfo_[id].push_back(tile.id);
+                });
+            }
+        }
+    }
+
+    /// Get a list of source tiles that project into destination 'tileId'.
+    const vts::TileId::list& source(const vts::TileId &tileId) const
+    {
+        auto fsourceInfo(sourceInfo_.find(tileId));
+        if (fsourceInfo == sourceInfo_.end()) { return emptySource_; }
+        return fsourceInfo->second;
+    }
+
+    std::size_t size() const { return sourceInfo_.size(); }
+
+    typedef std::vector<TileMapping> list;
+
+private:
+    std::map<vts::TileId, vts::TileId::list> sourceInfo_;
+    static const vts::TileId::list emptySource_;
+};
+
+// keep empty, used as placeholder!
+const vts::TileId::list TileMapping::emptySource_;
+
+
+//// encoder ///////////////////////////////////////////////////////////////////
+
+class Encoder : public vts::Encoder
+{
+public:
+    Encoder(const fs::path &path
+            , const vts::TileSetProperties &properties
+            , vts::CreateMode mode
+            , const InputTile::list &inputTiles
+            , const geo::SrsDefinition &inputSrs
+            , const Config &config)
+        : vts::Encoder(path, properties, mode)
+        , config_(config)
+        , tileMap_(inputTiles, inputSrs, referenceFrame(), 1.0/*config.maxClipMargin()*/)
+    {
+        //setConstraints(Constraints().setValidTree(srcInfo_.validTree()));
+        //setEstimatedTileCount(srcInfo_.size());
+    }
+
+private:
+    virtual TileResult
+    generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
+             , const TileResult&) UTILITY_OVERRIDE;
+
+    virtual void finish(vts::TileSet&);
+
+    const Config config_;
+
+    TileMapping tileMap_;
+};
+
+
+
+Encoder::TileResult
+Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
+                  , const TileResult&)
+{
+    // query which source meshes transform to the destination tileId
+    const auto &src(tileMap_.source(tileId));
+    if (src.empty()) {
+        return TileResult::Result::noDataYet;
+    }
+
+    LOG(info1) << "Source tiles(" << src.size() << "): "
+               << utility::join(src, ", ") << ".";
+
+    (void) nodeInfo;
+
+#if 0    // load
+
+
+    // CS convertors
+    // src physical -> dst SDS
+    const vts::CsConvertor srcPhy2Sds
+        (srcRf_.model.physicalSrs, nodeInfo.srs());
+
+    // dst SDS -> dst physical
+    const vts::CsConvertor sds2DstPhy
+        (nodeInfo.srs(), referenceFrame().model.physicalSrs);
+
+    auto clipExtents(vts::inflateTileExtents
+                     (nodeInfo.extents(), config_.clipMargin
+                      , borderCondition, config_.borderClipMargin));
+
+    // output
+    Encoder::TileResult result;
+    auto &tile(result.tile());
+    vts::Mesh &mesh
+        (*(tile.mesh = std::make_shared<vts::Mesh>(/*config_.forceWatertight*/)));
+    vts::RawAtlas::pointer patlas([&]() -> vts::RawAtlas::pointer
+    {
+        auto atlas(std::make_shared<vts::RawAtlas>());
+        tile.atlas = atlas;
+        return atlas;
+    }());
+    auto &atlas(*patlas);
+
+    // clip and add all source meshes to the output ('mesh')
+    for ( ;;; )
+    {
+        vts::SubMesh dstSm(vts::clip(submesh, clipExtents));
+
+        if (!dstSm.empty()) {
+
+            // convert mesh to destination physical SRS
+            warpInPlace(sds2DstPhy, dstSm);
+
+            // add mesh
+            mesh.add(dstSm);
+
+            // copy texture
+            atlas.add(input.atlas().get(smIndex));
+
+            // TODO: update credits
+        }
+    }
+
+    if (mesh.empty()) {
+        // no mesh
+        return TileResult::Result::noDataYet;
+    }
+
+    // merge submeshes if allowed
+    std::tie(tile.mesh, tile.atlas)
+        = mergeSubmeshes(tileId, tile.mesh, patlas, config_.textureQuality);
+
+    if (atlas.empty()) {
+        // no atlas -> disable
+        tile.atlas.reset();
+    }
+
+    // done:
+    return result;
+#endif
+    return {};
+}
+
+
+void Encoder::finish(vts::TileSet &ts)
+{
+    (void) ts;
+#if 0
+    auto position(input_.getProperties().position);
+
+    // convert initial position -- should work
+    const vts::CsConvertor nav2nav(input_.referenceFrame().model.navigationSrs
+                                   , referenceFrame().model.navigationSrs);
+    position.position = nav2nav(position.position);
+
+    // store
+    ts.setPosition(position);
+#endif
+}
+
+
+//// main //////////////////////////////////////////////////////////////////////
+
+void collectInputTiles(const LodTreeNode &node, unsigned depth,
+                       InputTile::list &list)
+{
+    list.emplace_back(list.size(), depth, &node);
+    for (const auto &ch : node.children) {
+        collectInputTiles(ch, depth+1, list);
+    }
 }
 
 math::Point3 point3(const aiVector3D &vec)
@@ -269,142 +592,73 @@ math::Point3 point3(const aiVector3D &vec)
     return {vec.x, vec.y, vec.z};
 }
 
-double calcTexArea(const aiMesh* mesh)
+math::Extents2 getModelExtents(const fs::path &path
+                               , const math::Point3 &center)
 {
-    double area = 0.0;
-    if (mesh->GetNumUVChannels())
+    Assimp::Importer imp;
+    const aiScene *scene = imp.ReadFile(path.native(), 0);
+    if (!scene) {
+        LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
+    }
+
+    math::Extents2 extents(math::InvalidExtents{});
+    for (unsigned m = 0; m < scene->mNumMeshes; m++)
     {
-        for (unsigned f = 0; f < mesh->mNumFaces; f++)
+        aiMesh *mesh = scene->mMeshes[m];
+        for (unsigned i = 0; i < mesh->mNumVertices; i++)
         {
-            aiFace &face = mesh->mFaces[f];
-            assert(face.mNumIndices == 3);
-
-            math::Point3 a(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
-            math::Point3 b(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
-            math::Point3 c(point3(mesh->mTextureCoords[0][face.mIndices[2]]));
-
-            area += 0.5*norm_2(math::crossProduct(b - a, c - a));
+            math::Point3 pt(center + point3(mesh->mVertices[i]));
+            math::update(extents, pt);
         }
     }
-    return area;
+    return extents;
 }
+
 
 int LodTree2Vts::run()
 {
+    // parse the XMLs
+    LOG(info3) << "Parsing " << input_;
     LodTreeExport lte(input_);
 
-    Levels levels(getLevels(lte));
+    // TODO: error checking (empty?)
+    geo::SrsDefinition inputSrs(geo::SrsDefinition::fromString(lte.srs));
 
-    /*for (unsigned i = 0; i < levels.size(); i++)
-    {
-        double texArea = 0.0;
-        for (const LodTreeNode* node : levels[i])
-        {
-            LOG(info2) << "Loading model " << node->modelPath;
-
-            Assimp::Importer imp;
-            const aiScene *scene = imp.ReadFile(node->modelPath.native(), 0);
-
-            for (unsigned m = 0; m < scene->mNumMeshes; m++)
-            {
-                aiMesh *mesh = scene->mMeshes[m];
-                aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
-
-                aiString texFile;
-                mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
-                fs::path texPath(node->modelPath.parent_path() / texFile.C_Str());
-
-                cv::Mat image(cv::imread(texPath.native()));
-                double texSize = image.rows * image.cols;
-
-                //LOG(info3) << texPath << " " << image.cols << "x" << image.rows;
-
-                texArea += calcTexArea(mesh) * texSize;
-            }
-        }
-
-        LOG(info3) << "Level " << i+13 << ": area " << texArea;
-    }*/
-
-
-    int l = 0;
-    for (const auto &level : levels)
-    {
-        geometry::Mesh levelMesh;
-        std::vector<int> faceValue;
-
-        int modelCount = 0;
-        for (const LodTreeNode* node : level)
-        {
-            LOG(info2) << "Loading model " << node->modelPath;
-
-            Assimp::Importer imp;
-            const aiScene *scene = imp.ReadFile(node->modelPath.native(), 0);
-
-            for (unsigned m = 0; m < scene->mNumMeshes; m++)
-            {
-                aiMesh *mesh = scene->mMeshes[m];
-
-                unsigned base = levelMesh.vertices.size();
-                for (unsigned i = 0; i < mesh->mNumVertices; i++) {
-                    auto vert(point3(mesh->mVertices[i]));
-                    levelMesh.vertices.push_back(vert + node->center);
-                }
-
-                for (unsigned i = 0; i < mesh->mNumFaces; i++) {
-                    aiFace *f = &(mesh->mFaces[i]);
-                    assert(f->mNumIndices == 3);
-                    levelMesh.faces.emplace_back(
-                        base + f->mIndices[0],
-                        base + f->mIndices[1],
-                        base + f->mIndices[2]);
-
-                    faceValue.push_back(modelCount);
-                }
-            }
-
-            modelCount++;
-        }
-
-        char name[100];
-        sprintf(name, "level%02d.ply", (l++) + 13);
-
-#if 1
-        LOG(info3) << "Writing " << name;
-
-        std::ofstream out(name);
-        out.setf(std::ios::scientific, std::ios::floatfield);
-
-        out << "ply\n"
-            << "format ascii 1.0\n"
-            << "element vertex " << levelMesh.vertices.size() << '\n'
-            << "property float x\n"
-            << "property float y\n"
-            << "property float z\n"
-            << "element face " << levelMesh.faces.size() << '\n'
-            << "property list uchar int vertex_indices\n"
-            << "property uchar red\n"
-            << "property uchar green\n"
-            << "property uchar blue\n"
-            << "end_header\n";
-
-        for (const auto &vertex : levelMesh.vertices)
-        {
-            out << vertex(0) << ' ' << vertex(1) << ' '  << vertex(2) << '\n';
-        }
-
-        unsigned fidx = 0;
-        for (const auto &face : levelMesh.faces)
-        {
-            out << "3 " << face.a << ' ' << face.b << ' ' << face.c << ' ';
-            srand(faceValue[fidx++]+1);
-            out << rand()%256 << ' ' << rand()%256 << ' ' << rand()%256 << '\n';
-        }
-
-#else
-        geometry::saveAsPly(levelMesh, name);
-#endif
+    // create a list of InputTiles
+    InputTile::list inputTiles;
+    for (const auto& block : lte.blocks) {
+        collectInputTiles(block, 0, inputTiles);
     }
+
+    // determine extents of all input tiles
+    for (auto &tile : inputTiles) {
+        LOG(info2) << "Getting extents of " << tile.node->modelPath;
+        tile.extents = getModelExtents(tile.node->modelPath,
+                                       tile.node->center + lte.origin);
+        // TODO?
+        //tile.textureSize = ...
+        LOG(info1) << "tile.extents = " << std::fixed << tile.extents;
+    }
+
+    // LOD assignment
+
+    // ... ?
+    int firstLod = 13; // ?
+    //int numLevels = 9;
+
+    for (auto &tile : inputTiles) {
+        tile.dstLod = firstLod + tile.depth;
+    }
+
+    // TODO
+    vts::TileSetProperties properties;
+    properties.referenceFrame = config_.referenceFrame;
+    properties.id = "TEST";
+    properties.credits = {1};
+
+    // run the encoder
+    Encoder enc(output_, properties, createMode_, inputTiles, inputSrs, config_);
+    enc.run();
 
     // all done
     LOG(info4) << "All done.";
@@ -413,7 +667,6 @@ int LodTree2Vts::run()
 
 
 } // namespace
-
 
 int main(int argc, char *argv[])
 {
