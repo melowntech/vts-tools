@@ -8,6 +8,8 @@
 
 #include "utility/buildsys.hpp"
 #include "utility/gccversion.hpp"
+#include "utility/openmp.hpp"
+#include "utility/progress.hpp"
 
 #include "service/cmdline.hpp"
 
@@ -32,6 +34,12 @@ namespace fs = boost::filesystem;
 namespace xml = tinyxml2;
 
 namespace {
+
+math::Point3 point3(const aiVector3D &vec)
+{
+    return {vec.x, vec.y, vec.z};
+}
+
 
 //// LodTreeExport.xml parse ///////////////////////////////////////////////////
 
@@ -180,6 +188,11 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
 
 struct Config {
     std::string referenceFrame;
+    int textureQuality;
+
+    Config()
+        : textureQuality(85)
+    {}
 };
 
 class LodTree2Vts : public service::Cmdline
@@ -227,6 +240,11 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
         ("referenceFrame", po::value(&config_.referenceFrame)->required()
          , "Output reference frame.")
+
+        ("textureQuality", po::value(&config_.textureQuality)
+         ->default_value(config_.textureQuality)->required()
+         , "Texture quality for JPEG texture encoding (0-100).")
+
         ;
 
     pd.add("input", 1);
@@ -386,6 +404,8 @@ public:
                 , const vr::ReferenceFrame &dstRf
                 , double margin)
     {
+        utility::Progress progress(inputTiles.size());
+
         for (const auto &tile : inputTiles)
         {
             const auto &srcExtents(tile.extents);
@@ -415,13 +435,34 @@ public:
                                , [&](const vts::TileId &id)
                 {
                     sourceInfo_[id].push_back(tile.id);
+                    dstTi_.set(id, 1);
                 });
             }
+
+            (++progress).report
+                (utility::Progress::ratio_t(5, 1000)
+                 , "building tile mapping ");
         }
+
+        // clone dst tile index to valid tree and make it complete
+        validTree_ = vts::TileIndex
+            (vts::LodRange(0, dstTi_.maxLod()), &dstTi_);
+        validTree_.complete();
+
+        /*std::ofstream f("src.dbg");
+        for (const auto &pair : sourceInfo_) {
+            f << pair.first << ":";
+            for (int id : pair.second) {
+                f << " " << id;
+            }
+            f << "\n";
+        }*/
     }
 
+    const vts::TileIndex* validTree() const { return &validTree_; }
+
     /// Get a list of source tiles that project into destination 'tileId'.
-    const vts::TileId::list& source(const vts::TileId &tileId) const
+    const std::vector<int>& source(const vts::TileId &tileId) const
     {
         auto fsourceInfo(sourceInfo_.find(tileId));
         if (fsourceInfo == sourceInfo_.end()) { return emptySource_; }
@@ -430,15 +471,16 @@ public:
 
     std::size_t size() const { return sourceInfo_.size(); }
 
-    typedef std::vector<TileMapping> list;
-
 private:
-    std::map<vts::TileId, vts::TileId::list> sourceInfo_;
-    static const vts::TileId::list emptySource_;
+    std::map<vts::TileId, std::vector<int>> sourceInfo_;
+    vts::TileIndex dstTi_;
+    vts::TileIndex validTree_;
+
+    static const std::vector<int> emptySource_;
 };
 
 // keep empty, used as placeholder!
-const vts::TileId::list TileMapping::emptySource_;
+const std::vector<int> TileMapping::emptySource_;
 
 
 //// encoder ///////////////////////////////////////////////////////////////////
@@ -449,15 +491,19 @@ public:
     Encoder(const fs::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
+            , const LodTreeExport &lte
             , const InputTile::list &inputTiles
             , const geo::SrsDefinition &inputSrs
             , const Config &config)
         : vts::Encoder(path, properties, mode)
+        , lte_(lte)
+        , inputTiles_(inputTiles)
+        , inputSrs_(inputSrs)
         , config_(config)
         , tileMap_(inputTiles, inputSrs, referenceFrame(), 1.0/*config.maxClipMargin()*/)
     {
-        //setConstraints(Constraints().setValidTree(srcInfo_.validTree()));
-        //setEstimatedTileCount(srcInfo_.size());
+        setConstraints(Constraints().setValidTree(tileMap_.validTree()));
+        setEstimatedTileCount(tileMap_.size());
     }
 
 private:
@@ -467,11 +513,90 @@ private:
 
     virtual void finish(vts::TileSet&);
 
+    const LodTreeExport &lte_;
+    const InputTile::list &inputTiles_;
+    const geo::SrsDefinition &inputSrs_;
     const Config config_;
 
     TileMapping tileMap_;
 };
 
+
+//typedef std::tuple<Mesh::pointer, Atlas::pointer> InputModel;
+typedef std::pair<vts::SubMesh, vts::RawAtlas> InputModel;
+
+InputModel loadModel(const fs::path &path, const math::Point3 &center)
+{
+    LOG(info3) << "Loading " << path;
+
+    Assimp::Importer imp;
+    const aiScene *scene = imp.ReadFile(path.native(), 0);
+    if (!scene) {
+        LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
+    }
+
+    // TODO: error checking
+    // TODO: multiple meshes
+
+    InputModel result;
+    //for (unsigned m = 0; m < scene->mNumMeshes; m++)
+    {
+        aiMesh *mesh = scene->mMeshes[/*m*/0];
+        for (unsigned i = 0; i < mesh->mNumVertices; i++)
+        {
+            math::Point3 pt(center + point3(mesh->mVertices[i]));
+            result.first.vertices.push_back(pt);
+
+            const aiVector3D &tc(mesh->mTextureCoords[0][i]);
+            result.first.tc.push_back({tc.x, tc.y});
+        }
+
+        for (unsigned i = 0; i < mesh->mNumFaces; i++)
+        {
+            assert(mesh->mFaces[i].mNumIndices == 3);
+            unsigned int* idx(mesh->mFaces[i].mIndices);
+            result.first.faces.emplace_back(idx[0], idx[1], idx[2]);
+            result.first.facesTc.emplace_back(idx[0], idx[1], idx[2]);
+        }
+
+        aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
+        aiString texFile;
+        mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
+
+        fs::path texPath;
+        if (texFile.length) {
+            texPath = path.parent_path() / texFile.C_Str();
+        } else {
+            texPath = "/home/jakub/empty.jpg";
+        }
+
+        LOG(info3) << "Loading " << texPath;
+        try {
+            utility::ifstreambuf ifs(texPath.native(), std::ios::binary);
+            vts::RawAtlas::Image buffer((std::istreambuf_iterator<char>(ifs)),
+                                         std::istreambuf_iterator<char>());
+
+            result.second.add(buffer);
+        }
+        catch (std::ifstream::failure e) {
+            LOG(warn3) << "Error loading " <<  texPath;
+        }
+    }
+
+    // TODO: optimize mesh!!!
+
+    return result;
+}
+
+
+void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
+{
+    // just convert vertices
+    for (auto &v : sm.vertices) {
+        // convert vertex in-place
+        v = conv(v);
+    }
+}
 
 
 Encoder::TileResult
@@ -479,31 +604,40 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                   , const TileResult&)
 {
     // query which source meshes transform to the destination tileId
-    const auto &src(tileMap_.source(tileId));
-    if (src.empty()) {
+    const auto &srcTiles(tileMap_.source(tileId));
+    if (srcTiles.empty()) {
         return TileResult::Result::noDataYet;
     }
 
-    LOG(info1) << "Source tiles(" << src.size() << "): "
-               << utility::join(src, ", ") << ".";
-
-    (void) nodeInfo;
-
-#if 0    // load
-
+    LOG(info1) << "Source tiles(" << srcTiles.size() << "): "
+               << utility::join(srcTiles, ", ") << ".";
 
     // CS convertors
-    // src physical -> dst SDS
-    const vts::CsConvertor srcPhy2Sds
-        (srcRf_.model.physicalSrs, nodeInfo.srs());
+    // src -> dst SDS
+    const vts::CsConvertor src2DstSds
+        (inputSrs_, nodeInfo.srs());
 
     // dst SDS -> dst physical
     const vts::CsConvertor sds2DstPhy
         (nodeInfo.srs(), referenceFrame().model.physicalSrs);
 
-    auto clipExtents(vts::inflateTileExtents
+    // load input models
+    std::vector<InputModel> inputModels;
+    inputModels.reserve(srcTiles.size());
+
+    for (int id : srcTiles)
+    {
+        const LodTreeNode &ltnode(*inputTiles_[id].node);
+        inputModels.push_back(loadModel(ltnode.modelPath,
+                                        lte_.origin + ltnode.center));
+
+        warpInPlace(src2DstSds, inputModels.back().first);
+    }
+
+    /*auto clipExtents(vts::inflateTileExtents
                      (nodeInfo.extents(), config_.clipMargin
-                      , borderCondition, config_.borderClipMargin));
+                      , borderCondition, config_.borderClipMargin));*/
+    auto clipExtents(nodeInfo.extents());
 
     // output
     Encoder::TileResult result;
@@ -516,12 +650,12 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         tile.atlas = atlas;
         return atlas;
     }());
-    auto &atlas(*patlas);
+    vts::RawAtlas &atlas(*patlas);
 
     // clip and add all source meshes to the output ('mesh')
-    for ( ;;; )
+    for (const auto &model : inputModels)
     {
-        vts::SubMesh dstSm(vts::clip(submesh, clipExtents));
+        vts::SubMesh dstSm(vts::clip(model.first, clipExtents));
 
         if (!dstSm.empty()) {
 
@@ -532,7 +666,7 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             mesh.add(dstSm);
 
             // copy texture
-            atlas.add(input.atlas().get(smIndex));
+            atlas.add(model.second.get(0/*smIndex*/));
 
             // TODO: update credits
         }
@@ -554,8 +688,6 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 
     // done:
     return result;
-#endif
-    return {};
 }
 
 
@@ -585,11 +717,6 @@ void collectInputTiles(const LodTreeNode &node, unsigned depth,
     for (const auto &ch : node.children) {
         collectInputTiles(ch, depth+1, list);
     }
-}
-
-math::Point3 point3(const aiVector3D &vec)
-{
-    return {vec.x, vec.y, vec.z};
 }
 
 math::Extents2 getModelExtents(const fs::path &path
@@ -643,7 +770,7 @@ int LodTree2Vts::run()
     // LOD assignment
 
     // ... ?
-    int firstLod = 13; // ?
+    int firstLod = 15; // ?
     //int numLevels = 9;
 
     for (auto &tile : inputTiles) {
@@ -657,7 +784,8 @@ int LodTree2Vts::run()
     properties.credits = {1};
 
     // run the encoder
-    Encoder enc(output_, properties, createMode_, inputTiles, inputSrs, config_);
+    Encoder enc(output_, properties, createMode_,
+                lte, inputTiles, inputSrs, config_);
     enc.run();
 
     // all done
