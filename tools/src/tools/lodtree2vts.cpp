@@ -46,11 +46,12 @@ math::Point3 point3(const aiVector3D &vec)
 struct LodTreeNode
 {
     double radius, minRange;
-    math::Point3 center;
+    math::Point3 origin;
     fs::path modelPath;
     std::vector<LodTreeNode> children;
 
-    LodTreeNode(xml::XMLElement *elem, const fs::path &dir);
+    LodTreeNode(xml::XMLElement *elem, const fs::path &dir,
+                const math::Point3 &rootOrigin);
 };
 
 struct LodTreeExport
@@ -118,7 +119,8 @@ xml::XMLElement* loadLodTreeXml(const fs::path &fname, xml::XMLDocument &doc)
 }
 
 
-LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir)
+LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
+                         const math::Point3 &rootOrigin)
 {
     int ok = xml::XML_SUCCESS;
     if (getElement(node, "Radius")->QueryDoubleText(&radius) != ok ||
@@ -128,9 +130,10 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir)
     }
 
     auto *ctr = getElement(node, "Center");
-    center(0) = getDoubleAttr(ctr, "x");
-    center(1) = getDoubleAttr(ctr, "y");
-    center(2) = getDoubleAttr(ctr, "z");
+    math::Point3 center(getDoubleAttr(ctr, "x"),
+                        getDoubleAttr(ctr, "y"),
+                        getDoubleAttr(ctr, "z"));
+    origin = rootOrigin + center;
 
     modelPath = dir / getElement(node, "ModelPath")->GetText();
 
@@ -142,7 +145,7 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir)
     {
         if (strNode == elem->Name())
         {
-            children.emplace_back(elem, dir);
+            children.emplace_back(elem, dir, rootOrigin);
         }
     }
 }
@@ -178,7 +181,7 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
             auto *tileRoot = loadLodTreeXml(path, tileDoc);
             auto *rootNode = getElement(tileRoot, "Tile");
 
-            blocks.emplace_back(rootNode, path.parent_path());
+            blocks.emplace_back(rootNode, path.parent_path(), origin);
         }
     }
 }
@@ -281,17 +284,19 @@ usage
 struct InputTile
 {
     int id;
-    int depth;  // depth in input LodTree
-    int dstLod; // output (vts) LOD
+    int depth;   // depth in input LodTree
+    int dstLod;  // output (vts) LOD
 
     const LodTreeNode *node;
     math::Extents2 extents; // tile extents in LodTree
     //math::Size2 textureSize;
 
+    mutable int loadCnt; // stats (how many times loaded to cache)
+
     typedef std::vector<InputTile> list;
 
     InputTile(int id, int depth, const LodTreeNode* node)
-        : id(id), depth(depth), dstLod(), node(node), extents()
+        : id(id), depth(depth), dstLod(), node(node), extents(), loadCnt()
     {}
 };
 
@@ -448,15 +453,6 @@ public:
         validTree_ = vts::TileIndex
             (vts::LodRange(0, dstTi_.maxLod()), &dstTi_);
         validTree_.complete();
-
-        /*std::ofstream f("src.dbg");
-        for (const auto &pair : sourceInfo_) {
-            f << pair.first << ":";
-            for (int id : pair.second) {
-                f << " " << id;
-            }
-            f << "\n";
-        }*/
     }
 
     const vts::TileIndex* validTree() const { return &validTree_; }
@@ -483,6 +479,169 @@ private:
 const std::vector<int> TileMapping::emptySource_;
 
 
+//// import + cache ////////////////////////////////////////////////////////////
+
+/** Represents a model (meshes + textures) loaded in memory.
+ */
+struct Model
+{
+    Model(int id) : id(id) {}
+
+    int id;
+    vts::Mesh mesh;
+    vts::RawAtlas atlas;
+    std::mutex loadMutex;
+
+    void load(const fs::path &path, const math::Point3 &origin);
+
+    typedef std::shared_ptr<Model> pointer;
+};
+
+
+void Model::load(const fs::path &path, const math::Point3 &origin)
+{
+    LOG(info2) << "Loading model " << id << " (" << path << ").";
+
+    Assimp::Importer imp;
+    const aiScene *scene = imp.ReadFile(path.native(), 0);
+    if (!scene) {
+        LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
+    }
+
+    // TODO: error checking
+
+    for (unsigned m = 0; m < scene->mNumMeshes; m++)
+    {
+        vts::SubMesh submesh;
+
+        aiMesh *aimesh = scene->mMeshes[m];
+        for (unsigned i = 0; i < aimesh->mNumVertices; i++)
+        {
+            math::Point3 pt(origin + point3(aimesh->mVertices[i]));
+            submesh.vertices.push_back(pt);
+
+            const aiVector3D &tc(aimesh->mTextureCoords[0][i]);
+            submesh.tc.push_back({tc.x, tc.y});
+        }
+
+        for (unsigned i = 0; i < aimesh->mNumFaces; i++)
+        {
+            assert(aimesh->mFaces[i].mNumIndices == 3);
+            unsigned int* idx(aimesh->mFaces[i].mIndices);
+            submesh.faces.emplace_back(idx[0], idx[1], idx[2]);
+            submesh.facesTc.emplace_back(idx[0], idx[1], idx[2]);
+        }
+
+        mesh.add(submesh);
+
+        aiString texFile;
+        aiMaterial *mat = scene->mMaterials[aimesh->mMaterialIndex];
+        mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
+
+        fs::path texPath;
+        if (texFile.length) {
+            texPath = path.parent_path() / texFile.C_Str();
+        } else {
+            texPath = "/home/jakub/empty.jpg"; // FIXME!!!
+        }
+
+        LOG(info2) << "Loading " << texPath;
+        try {
+            utility::ifstreambuf ifs(texPath.native(), std::ios::binary);
+            vts::RawAtlas::Image buffer((std::istreambuf_iterator<char>(ifs)),
+                                         std::istreambuf_iterator<char>());
+
+            atlas.add(buffer);
+        }
+        catch (std::ifstream::failure e) {
+            LOG(warn3) << "Error loading " <<  texPath;
+        }
+    }
+
+    // TODO: optimize mesh!!!
+}
+
+
+class ModelCache
+{
+public:
+    ModelCache(const InputTile::list &input, unsigned cacheLimit)
+        : input_(input), cacheLimit_(cacheLimit)
+        , hitCnt_(), missCnt_()
+    {}
+
+    Model::pointer get(int id);
+
+    ~ModelCache();
+
+private:
+    const InputTile::list &input_;
+    unsigned cacheLimit_;
+    long hitCnt_, missCnt_;
+
+    std::list<Model::pointer> cache_;
+    std::mutex mutex_;
+};
+
+
+Model::pointer ModelCache::get(int id)
+{
+    std::unique_lock<std::mutex> cacheLock(mutex_);
+
+    // return model immediately if present in the cache
+    for (auto it = cache_.begin(); it != cache_.end(); it++) {
+        Model::pointer ptr(*it);
+        if (ptr->id == id)
+        {
+            LOG(info1) << "Cache hit: model " << id;
+            ++hitCnt_;
+
+            // move the the front of the list
+            cache_.erase(it);
+            cache_.push_front(ptr);
+
+            // make sure model is not being loaded and return
+            std::lock_guard<std::mutex> loadLock(ptr->loadMutex);
+            return ptr;
+        }
+    }
+
+    LOG(info2) << "Cache miss: model " << id;
+    ++missCnt_;
+
+    // free LRU items from the cache
+    while (cache_.size() >= cacheLimit_)
+    {
+        LOG(info1) << "Releasing model " << cache_.back()->id;
+        cache_.pop_back();
+    }
+
+    // create new cache entry
+    Model::pointer ptr(std::make_shared<Model>(id));
+    cache_.push_front(ptr);
+
+    // unlock cache and load data
+    std::lock_guard<std::mutex> loadLock(ptr->loadMutex);
+    cacheLock.unlock();
+
+    const InputTile &intile(input_[id]);
+    ptr->load(intile.node->modelPath, intile.node->origin);
+    intile.loadCnt++;
+    return ptr;
+}
+
+ModelCache::~ModelCache()
+{
+    // print stats
+    double sum(0.0);
+    for (const auto &tile : input_) {
+        sum += tile.loadCnt;
+    }
+    LOG(info2) << "Cache miss/hit: " << missCnt_ << "/" << hitCnt_;
+    LOG(info2) << "Tile average load count: " << sum / input_.size();
+}
+
+
 //// encoder ///////////////////////////////////////////////////////////////////
 
 class Encoder : public vts::Encoder
@@ -491,16 +650,15 @@ public:
     Encoder(const fs::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
-            , const LodTreeExport &lte
             , const InputTile::list &inputTiles
             , const geo::SrsDefinition &inputSrs
             , const Config &config)
         : vts::Encoder(path, properties, mode)
-        , lte_(lte)
         , inputTiles_(inputTiles)
         , inputSrs_(inputSrs)
         , config_(config)
         , tileMap_(inputTiles, inputSrs, referenceFrame(), 1.0/*config.maxClipMargin()*/)
+        , modelCache_(inputTiles, 64)
     {
         setConstraints(Constraints().setValidTree(tileMap_.validTree()));
         setEstimatedTileCount(tileMap_.size());
@@ -513,80 +671,13 @@ private:
 
     virtual void finish(vts::TileSet&);
 
-    const LodTreeExport &lte_;
     const InputTile::list &inputTiles_;
     const geo::SrsDefinition &inputSrs_;
     const Config config_;
 
     TileMapping tileMap_;
+    ModelCache modelCache_;
 };
-
-
-//typedef std::tuple<Mesh::pointer, Atlas::pointer> InputModel;
-typedef std::pair<vts::SubMesh, vts::RawAtlas> InputModel;
-
-InputModel loadModel(const fs::path &path, const math::Point3 &center)
-{
-    LOG(info3) << "Loading " << path;
-
-    Assimp::Importer imp;
-    const aiScene *scene = imp.ReadFile(path.native(), 0);
-    if (!scene) {
-        LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
-    }
-
-    // TODO: error checking
-    // TODO: multiple meshes
-
-    InputModel result;
-    //for (unsigned m = 0; m < scene->mNumMeshes; m++)
-    {
-        aiMesh *mesh = scene->mMeshes[/*m*/0];
-        for (unsigned i = 0; i < mesh->mNumVertices; i++)
-        {
-            math::Point3 pt(center + point3(mesh->mVertices[i]));
-            result.first.vertices.push_back(pt);
-
-            const aiVector3D &tc(mesh->mTextureCoords[0][i]);
-            result.first.tc.push_back({tc.x, tc.y});
-        }
-
-        for (unsigned i = 0; i < mesh->mNumFaces; i++)
-        {
-            assert(mesh->mFaces[i].mNumIndices == 3);
-            unsigned int* idx(mesh->mFaces[i].mIndices);
-            result.first.faces.emplace_back(idx[0], idx[1], idx[2]);
-            result.first.facesTc.emplace_back(idx[0], idx[1], idx[2]);
-        }
-
-        aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
-        aiString texFile;
-        mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
-
-        fs::path texPath;
-        if (texFile.length) {
-            texPath = path.parent_path() / texFile.C_Str();
-        } else {
-            texPath = "/home/jakub/empty.jpg";
-        }
-
-        LOG(info3) << "Loading " << texPath;
-        try {
-            utility::ifstreambuf ifs(texPath.native(), std::ios::binary);
-            vts::RawAtlas::Image buffer((std::istreambuf_iterator<char>(ifs)),
-                                         std::istreambuf_iterator<char>());
-
-            result.second.add(buffer);
-        }
-        catch (std::ifstream::failure e) {
-            LOG(warn3) << "Error loading " <<  texPath;
-        }
-    }
-
-    // TODO: optimize mesh!!!
-
-    return result;
-}
 
 
 void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
@@ -598,19 +689,25 @@ void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
     }
 }
 
-
 Encoder::TileResult
 Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                   , const TileResult&)
 {
-    // query which source meshes transform to the destination tileId
-    const auto &srcTiles(tileMap_.source(tileId));
-    if (srcTiles.empty()) {
+    // query which source models transform to the destination tileId
+    const auto &srcIds(tileMap_.source(tileId));
+    if (srcIds.empty()) {
         return TileResult::Result::noDataYet;
     }
 
-    LOG(info1) << "Source tiles(" << srcTiles.size() << "): "
-               << utility::join(srcTiles, ", ") << ".";
+    LOG(info1) << "Source models (" << srcIds.size() << "): "
+               << utility::join(srcIds, ", ") << ".";
+
+    // get the models from the cache
+    std::vector<Model::pointer> srcModels;
+    srcModels.reserve(srcIds.size());
+    for (int id : srcIds) {
+        srcModels.push_back(modelCache_.get(id));
+    }
 
     // CS convertors
     // src -> dst SDS
@@ -620,19 +717,6 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     // dst SDS -> dst physical
     const vts::CsConvertor sds2DstPhy
         (nodeInfo.srs(), referenceFrame().model.physicalSrs);
-
-    // load input models
-    std::vector<InputModel> inputModels;
-    inputModels.reserve(srcTiles.size());
-
-    for (int id : srcTiles)
-    {
-        const LodTreeNode &ltnode(*inputTiles_[id].node);
-        inputModels.push_back(loadModel(ltnode.modelPath,
-                                        lte_.origin + ltnode.center));
-
-        warpInPlace(src2DstSds, inputModels.back().first);
-    }
 
     /*auto clipExtents(vts::inflateTileExtents
                      (nodeInfo.extents(), config_.clipMargin
@@ -652,23 +736,31 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     }());
     vts::RawAtlas &atlas(*patlas);
 
-    // clip and add all source meshes to the output ('mesh')
-    for (const auto &model : inputModels)
-    {
-        vts::SubMesh dstSm(vts::clip(model.first, clipExtents));
+    // clip and add all source meshes (+atlases) to the output
+    for (const auto &model : srcModels) {
+        int smIndex(0);
+        for (const auto &submesh : model->mesh)
+        {
+            // copy mesh and convert it to destination SDS...
+            vts::SubMesh copy(submesh);
+            warpInPlace(src2DstSds, copy);
 
-        if (!dstSm.empty()) {
+            // ...where we clip it
+            vts::SubMesh clipped(vts::clip(copy, clipExtents));
 
-            // convert mesh to destination physical SRS
-            warpInPlace(sds2DstPhy, dstSm);
+            if (!clipped.empty()) {
+                // convert mesh to destination physical SRS
+                warpInPlace(sds2DstPhy, clipped);
 
-            // add mesh
-            mesh.add(dstSm);
+                // add to output
+                mesh.add(clipped);
 
-            // copy texture
-            atlas.add(model.second.get(0/*smIndex*/));
+                // copy texture
+                atlas.add(model->atlas.get(smIndex));
 
-            // TODO: update credits
+                // TODO: update credits
+            }
+            smIndex++;
         }
     }
 
@@ -760,8 +852,7 @@ int LodTree2Vts::run()
     // determine extents of all input tiles
     for (auto &tile : inputTiles) {
         LOG(info2) << "Getting extents of " << tile.node->modelPath;
-        tile.extents = getModelExtents(tile.node->modelPath,
-                                       tile.node->center + lte.origin);
+        tile.extents = getModelExtents(tile.node->modelPath, tile.node->origin);
         // TODO?
         //tile.textureSize = ...
         LOG(info1) << "tile.extents = " << std::fixed << tile.extents;
@@ -784,8 +875,7 @@ int LodTree2Vts::run()
     properties.credits = {1};
 
     // run the encoder
-    Encoder enc(output_, properties, createMode_,
-                lte, inputTiles, inputSrs, config_);
+    Encoder enc(output_, properties, createMode_, inputTiles, inputSrs, config_);
     enc.run();
 
     // all done
