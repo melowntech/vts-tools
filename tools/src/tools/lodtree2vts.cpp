@@ -6,6 +6,8 @@
 #include "geometry/mesh.hpp"
 #include "geometry/meshop.hpp"
 
+#include "imgproc/jpeg.hpp"
+
 #include "utility/buildsys.hpp"
 #include "utility/gccversion.hpp"
 #include "utility/openmp.hpp"
@@ -135,7 +137,10 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
                         getDoubleAttr(ctr, "z"));
     origin = rootOrigin + center;
 
-    modelPath = dir / getElement(node, "ModelPath")->GetText();
+    auto* mpath = node->FirstChildElement("ModelPath");
+    if (mpath) {
+        modelPath = dir / mpath->GetText();
+    }
 
     // load all children
     std::string strNode("Node");
@@ -288,15 +293,17 @@ struct InputTile
     int dstLod;  // output (vts) LOD
 
     const LodTreeNode *node;
+
     math::Extents2 extents; // tile extents in LodTree
-    //math::Size2 textureSize;
+    double physArea, texArea;
 
     mutable int loadCnt; // stats (how many times loaded to cache)
 
     typedef std::vector<InputTile> list;
 
     InputTile(int id, int depth, const LodTreeNode* node)
-        : id(id), depth(depth), dstLod(), node(node), extents(), loadCnt()
+        : id(id), depth(depth), dstLod(), node(node), extents()
+        , physArea(0.), texArea(0.), loadCnt()
     {}
 };
 
@@ -498,6 +505,15 @@ struct Model
 };
 
 
+std::string textureFile(const aiScene *scene, const aiMesh *mesh, int channel)
+{
+    aiString texFile;
+    aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
+    mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(channel), texFile);
+    return {texFile.C_Str()};
+}
+
+
 void Model::load(const fs::path &path, const math::Point3 &origin)
 {
     LOG(info2) << "Loading model " << id << " (" << path << ").";
@@ -534,13 +550,11 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
 
         mesh.add(submesh);
 
-        aiString texFile;
-        aiMaterial *mat = scene->mMaterials[aimesh->mMaterialIndex];
-        mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), texFile);
+        std::string texFile(textureFile(scene, aimesh, 0));
 
         fs::path texPath;
-        if (texFile.length) {
-            texPath = path.parent_path() / texFile.C_Str();
+        if (!texFile.empty()) {
+            texPath = path.parent_path() / texFile;
         } else {
             texPath = "/home/jakub/empty.jpg"; // FIXME!!!
         }
@@ -805,43 +819,110 @@ void Encoder::finish(vts::TileSet &ts)
 void collectInputTiles(const LodTreeNode &node, unsigned depth,
                        InputTile::list &list)
 {
-    list.emplace_back(list.size(), depth, &node);
+    if (!node.modelPath.empty()) {
+        list.emplace_back(list.size(), depth, &node);
+    }
     for (const auto &ch : node.children) {
         collectInputTiles(ch, depth+1, list);
     }
 }
 
-math::Extents2 getModelExtents(const fs::path &path
-                               , const math::Point3 &center)
+int imageArea(const fs::path &path)
 {
+    // try to get the size without loading the whole image
+    std::string ext(path.extension().string()), jpg(".jpg"), jpeg(".jpeg");
+    if (boost::iequals(ext, jpg) || boost::iequals(ext, jpeg))
+    {
+        try {
+            utility::ifstreambuf f(path.native());
+            return area(imgproc::jpegSize(f, path));
+        }
+        catch (...) {}
+    }
+
+    // fallback: do load the image
+    cv::Mat img = cv::imread(path.native());
+    if (img.empty()) {
+        LOGTHROW(err3, std::runtime_error) << "Could not load " << path;
+    }
+    return img.rows * img.cols;
+}
+
+/** Calculate and set tile.extents, tile.physArea, tile.texArea
+ */
+void calcModelExtents(InputTile &tile, const vts::CsConvertor &convToPhys)
+{
+    fs::path path(tile.node->modelPath);
+
     Assimp::Importer imp;
     const aiScene *scene = imp.ReadFile(path.native(), 0);
     if (!scene) {
         LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
     }
 
-    math::Extents2 extents(math::InvalidExtents{});
+    tile.extents = math::Extents2(math::InvalidExtents{});
+    tile.physArea = 0.0;
+    tile.texArea = 0.0;
+
     for (unsigned m = 0; m < scene->mNumMeshes; m++)
     {
         aiMesh *mesh = scene->mMeshes[m];
+
+        math::Points3d physPts(mesh->mNumVertices);
         for (unsigned i = 0; i < mesh->mNumVertices; i++)
         {
-            math::Point3 pt(center + point3(mesh->mVertices[i]));
-            math::update(extents, pt);
+            math::Point3 pt(tile.node->origin + point3(mesh->mVertices[i]));
+            math::update(tile.extents, pt);
+            physPts[i] = convToPhys(pt);
+        }
+
+        if (!mesh->GetNumUVChannels()) {
+            LOGTHROW(err3, std::runtime_error)
+                << path << ": mesh is not textured.";
+        }
+
+        std::string texFile(textureFile(scene, mesh, 0));
+        if (texFile.empty()) {
+            LOGTHROW(err3, std::runtime_error)
+                << path << ": mesh does not reference a texture file.";
+        }
+
+        fs::path texPath(path.parent_path() / texFile);
+        int imgArea(imageArea(texPath));
+
+        for (unsigned f = 0; f < mesh->mNumFaces; f++)
+        {
+            aiFace &face = mesh->mFaces[f];
+            if (face.mNumIndices != 3) {
+                LOGTHROW(err3, std::runtime_error) << path << ": faces with "
+                    << face.mNumIndices << " vertices not supported.";
+            }
+
+            math::Point3 a(physPts[face.mIndices[0]]);
+            math::Point3 b(physPts[face.mIndices[1]]);
+            math::Point3 c(physPts[face.mIndices[2]]);
+
+            tile.physArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
+
+            math::Point3 ta(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
+            math::Point3 tb(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
+            math::Point3 tc(point3(mesh->mTextureCoords[0][face.mIndices[2]]));
+
+            tile.texArea += 0.5*norm_2(math::crossProduct(tb - ta, tc - ta))
+                               *imgArea;
         }
     }
-    return extents;
 }
 
 
 int LodTree2Vts::run()
 {
     // parse the XMLs
-    LOG(info3) << "Parsing " << input_;
+    LOG(info4) << "Parsing " << input_;
     LodTreeExport lte(input_);
 
     // TODO: error checking (empty?)
-    geo::SrsDefinition inputSrs(geo::SrsDefinition::fromString(lte.srs));
+    auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
 
     // create a list of InputTiles
     InputTile::list inputTiles;
@@ -849,14 +930,53 @@ int LodTree2Vts::run()
         collectInputTiles(block, 0, inputTiles);
     }
 
-    // determine extents of all input tiles
-    for (auto &tile : inputTiles) {
+    // determine extents of the input tiles
+    vts::CsConvertor convToPhys(inputSrs, "geocentric-wgs84");
+    for (auto &tile : inputTiles)
+    {
         LOG(info2) << "Getting extents of " << tile.node->modelPath;
-        tile.extents = getModelExtents(tile.node->modelPath, tile.node->origin);
-        // TODO?
-        //tile.textureSize = ...
-        LOG(info1) << "tile.extents = " << std::fixed << tile.extents;
+        calcModelExtents(tile, convToPhys);
+
+        LOG(info1)
+            << "\ntile.extents = " << std::fixed << tile.extents
+            << "\ntile.physArea = " << tile.physArea
+            << "\ntile.texArea = " << tile.texArea << "\n";
     }
+
+    // accumulate physArea and texArea for each LOD layer
+    std::vector<std::pair<double, double> > area;
+    for (const auto &tile : inputTiles)
+    {
+        if (size_t(tile.depth) >= area.size()) {
+            area.emplace_back(0.0, 0.0);
+        }
+        auto &pair(area[tile.depth]);
+        pair.first += tile.physArea;
+        pair.second += tile.texArea;
+    }
+
+    // print level resolution stats and warning
+    {
+        int level(0);
+        double prev(0.);
+        for (const auto &pair : area) {
+            double factor(level ? pair.second / prev : 0.0);
+            LOG(info4)
+                << "Tree level " << level
+                << ": physical area = " << std::fixed << pair.first
+                << " m2, texture area = " << pair.second
+                << " px (" << factor << " times previous)";
+
+            if (level && factor < 3.9) {
+                LOG(warn4) << "Warning: level " << level << " does not have "
+                              "double the resolution of previous level.";
+            }
+            ++level;
+            prev = pair.second;
+        }
+    }
+
+    // TODO: delete levels with factor < 1
 
     // LOD assignment
 
@@ -876,6 +996,7 @@ int LodTree2Vts::run()
 
     // run the encoder
     Encoder enc(output_, properties, createMode_, inputTiles, inputSrs, config_);
+    LOG(info4) << "Encoding VTS tiles.";
     enc.run();
 
     // all done
