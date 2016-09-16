@@ -976,68 +976,73 @@ int LodTree2Vts::run()
             << "\ntile.texArea = " << tile.texArea << "\n";
     }
 
-    // accumulate sdsArea and texArea for each LOD layer
-    std::vector<std::pair<double, double> > levelAreas;
-    for (const auto &tile : inputTiles)
+    // calculate texel size of each tree level
+    std::vector<double> texelArea;
     {
-        if (size_t(tile.depth) >= levelAreas.size()) {
-            levelAreas.emplace_back(0.0, 0.0);
+        std::vector<std::pair<double, double> > areas;
+        for (const auto &tile : inputTiles)
+        {
+            if (size_t(tile.depth) >= areas.size()) {
+                areas.emplace_back(0.0, 0.0);
+            }
+            auto &pair(areas[tile.depth]);
+            pair.first += tile.sdsArea;
+            pair.second += tile.texArea;
         }
-        auto &pair(levelAreas[tile.depth]);
-        pair.first += tile.sdsArea;
-        pair.second += tile.texArea;
+        for (const auto &pair : areas) {
+            texelArea.push_back(pair.first / pair.second);
+        }
     }
 
-    // print level resolution stats and warnings
+    // print resolutions and warnings
     {
         int level(0);
-        double prev(0.);
-        for (const auto &pair : levelAreas) {
-            double factor(level ? pair.second / prev : 0.0);
-            LOG(info4)
-                << "Tree level " << level
-                << ": physical area = " << std::fixed << pair.first
-                << " m2, texture area = " << pair.second
-                << " px (" << factor << " times previous)";
-
-            if (level && factor < 1.0) {
-                LOG(warn4)
-                    << "Warning: level " << level << " has smaller resolution "
-                       "than previous level. This level should be removed (see "
-                       "also --maxLevel).";
+        for (double ta : texelArea) {
+            if (!level) {
+                LOG(info4) << "Tree level " << level
+                           << ": avg texel area = " << ta;
             }
-            else if (level && factor < 3.9) {
-                LOG(warn4)
-                    << "Warning: level " << level << " does not have "
-                       "double the resolution of previous level.";
+            else {
+                double factor(texelArea[level-1] / ta);
+                LOG(info4) << "Tree level " << level
+                           << ": avg texel area = " << ta
+                           << " (resolution " << sqrt(factor)
+                           << " times previous)";
+
+                if (level && factor < 1.0) {
+                    LOG(warn4)
+                        << "Warning: level " << level << " has smaller "
+                           "resolution than previous level. This level should "
+                           "be removed (see also --maxLevel).";
+                }
+                else if (level && factor < 3.9) {
+                    LOG(warn4)
+                        << "Warning: level " << level << " does not have "
+                           "double the resolution of previous level.";
+                }
             }
             ++level;
-            prev = pair.second;
         }
     }
-
-    // TODO: delete levels with factor < 1
 
     // LOD assignment
     {
         int level(0), count(0);
-        double avgRootLod(0.), prevTA(-1);
-        for (const auto &pair : levelAreas)
+        double avgRootLod(0.);
+        for (double ta : texelArea)
         {
             // calculate VTS lod assuming 256^2 optimal texture tiles
-            double texelArea = pair.first / pair.second;
-            double tileArea = 256*256*texelArea;
+            double tileArea = 256*256*ta;
             double tileLod = 0.5*log2(sdsNode.extents.area() / tileArea);
             tileLod += sdsNode.id.lod;
 
             LOG(info4) << "Tree level " << level << " ~ VTS LOD " << tileLod;
 
-            if (!level || (prevTA / texelArea > 3.0)) // skip bad levels
+            if (!level || (texelArea[level-1] / ta > 3.0)) // skip bad levels
             {
                 avgRootLod += tileLod - level;
                 ++count;
             }
-            prevTA = texelArea;
             ++level;
         }
         avgRootLod /= count;
@@ -1045,6 +1050,7 @@ int LodTree2Vts::run()
 
         int rootLod(round(avgRootLod));
         LOG(info4) << "Placing tree level 0 at VTS LOD " << rootLod << ".";
+
         for (auto &tile : inputTiles) {
             tile.dstLod = rootLod + tile.depth;
         }
