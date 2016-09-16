@@ -295,7 +295,7 @@ struct InputTile
     const LodTreeNode *node;
 
     math::Extents2 extents; // tile extents in LodTree
-    double physArea, texArea;
+    double sdsArea, texArea;
 
     mutable int loadCnt; // stats (how many times loaded to cache)
 
@@ -303,7 +303,7 @@ struct InputTile
 
     InputTile(int id, int depth, const LodTreeNode* node)
         : id(id), depth(depth), dstLod(), node(node), extents()
-        , physArea(0.), texArea(0.), loadCnt()
+        , sdsArea(0.), texArea(0.), loadCnt()
     {}
 };
 
@@ -412,7 +412,7 @@ class TileMapping : boost::noncopyable
 {
 public:
     TileMapping(const std::vector<InputTile> inputTiles
-                , const geo::SrsDefinition &inputSRS
+                , const geo::SrsDefinition &inputSrs
                 , const vr::ReferenceFrame &dstRf
                 , double margin)
     {
@@ -430,7 +430,7 @@ public:
                 const auto &node(item.second);
                 if (!node.valid()) { continue; }
 
-                const vts::CsConvertor csconv(inputSRS, node.srs);
+                const vts::CsConvertor csconv(inputSrs, node.srs);
                 auto dstCorners(projectCorners(node, csconv, srcCorners));
 
                 // ignore tiles that cannot be transformed
@@ -848,9 +848,9 @@ int imageArea(const fs::path &path)
     return img.rows * img.cols;
 }
 
-/** Calculate and set tile.extents, tile.physArea, tile.texArea
+/** Calculate and set tile.extents, tile.sdsArea, tile.texArea
  */
-void calcModelExtents(InputTile &tile, const vts::CsConvertor &convToPhys)
+void calcModelExtents(InputTile &tile, const vts::CsConvertor &csconv)
 {
     fs::path path(tile.node->modelPath);
 
@@ -861,7 +861,7 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &convToPhys)
     }
 
     tile.extents = math::Extents2(math::InvalidExtents{});
-    tile.physArea = 0.0;
+    tile.sdsArea = 0.0;
     tile.texArea = 0.0;
 
     for (unsigned m = 0; m < scene->mNumMeshes; m++)
@@ -873,7 +873,7 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &convToPhys)
         {
             math::Point3 pt(tile.node->origin + point3(mesh->mVertices[i]));
             math::update(tile.extents, pt);
-            physPts[i] = convToPhys(pt);
+            physPts[i] = csconv(pt);
         }
 
         if (!mesh->GetNumUVChannels()) {
@@ -902,7 +902,7 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &convToPhys)
             math::Point3 b(physPts[face.mIndices[1]]);
             math::Point3 c(physPts[face.mIndices[2]]);
 
-            tile.physArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
+            tile.sdsArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
 
             math::Point3 ta(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
             math::Point3 tb(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
@@ -924,6 +924,31 @@ int LodTree2Vts::run()
     // TODO: error checking (empty?)
     auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
 
+    // find a suitable reference frame division node
+    boost::optional<vts::CsConvertor> convToSds;
+    vr::ReferenceFrame::Division::Node sdsNode;
+    {
+        const auto &rf(vr::system.referenceFrames(config_.referenceFrame));
+        int maxLod(-1);
+        for (const auto &pair : rf.division.nodes) {
+            const auto &node(pair.second);
+            if (!node.valid()) { continue; }
+
+            const vts::CsConvertor csconv(inputSrs, node.srs);
+            if (math::inside(node.extents, csconv(lte.origin))
+                && node.id.lod > maxLod)
+            {
+                convToSds = csconv;
+                sdsNode = node;
+                maxLod = node.id.lod;
+            }
+        }
+        if (!convToSds) {
+            LOGTHROW(err3, std::runtime_error)
+                << "Couldn't find reference frame node for " << lte.origin;
+        }
+    }
+
     // create a list of InputTiles
     InputTile::list inputTiles;
     for (const auto& block : lte.blocks) {
@@ -931,35 +956,36 @@ int LodTree2Vts::run()
     }
 
     // determine extents of the input tiles
-    vts::CsConvertor convToPhys(inputSrs, "geocentric-wgs84");
-    for (auto &tile : inputTiles)
+    UTILITY_OMP(parallel for)
+    for (unsigned i = 0; i < inputTiles.size(); i++)
     {
+        auto &tile(inputTiles[i]);
         LOG(info2) << "Getting extents of " << tile.node->modelPath;
-        calcModelExtents(tile, convToPhys);
+        calcModelExtents(tile, *convToSds);
 
         LOG(info1)
             << "\ntile.extents = " << std::fixed << tile.extents
-            << "\ntile.physArea = " << tile.physArea
+            << "\ntile.sdsArea = " << tile.sdsArea
             << "\ntile.texArea = " << tile.texArea << "\n";
     }
 
-    // accumulate physArea and texArea for each LOD layer
-    std::vector<std::pair<double, double> > area;
+    // accumulate sdsArea and texArea for each LOD layer
+    std::vector<std::pair<double, double> > levelAreas;
     for (const auto &tile : inputTiles)
     {
-        if (size_t(tile.depth) >= area.size()) {
-            area.emplace_back(0.0, 0.0);
+        if (size_t(tile.depth) >= levelAreas.size()) {
+            levelAreas.emplace_back(0.0, 0.0);
         }
-        auto &pair(area[tile.depth]);
-        pair.first += tile.physArea;
+        auto &pair(levelAreas[tile.depth]);
+        pair.first += tile.sdsArea;
         pair.second += tile.texArea;
     }
 
-    // print level resolution stats and warning
+    // print level resolution stats and warnings
     {
         int level(0);
         double prev(0.);
-        for (const auto &pair : area) {
+        for (const auto &pair : levelAreas) {
             double factor(level ? pair.second / prev : 0.0);
             LOG(info4)
                 << "Tree level " << level
@@ -967,9 +993,15 @@ int LodTree2Vts::run()
                 << " m2, texture area = " << pair.second
                 << " px (" << factor << " times previous)";
 
-            if (level && factor < 3.9) {
-                LOG(warn4) << "Warning: level " << level << " does not have "
-                              "double the resolution of previous level.";
+            if (level && factor < 1.0) {
+                LOG(warn4)
+                    << "Warning: level " << level << " has smaller resolution "
+                       "than previous level. This level should be removed.";
+            }
+            else if (level && factor < 3.9) {
+                LOG(warn4)
+                    << "Warning: level " << level << " does not have "
+                       "double the resolution of previous level.";
             }
             ++level;
             prev = pair.second;
@@ -979,13 +1011,35 @@ int LodTree2Vts::run()
     // TODO: delete levels with factor < 1
 
     // LOD assignment
+    {
+        int level(0), count(0);
+        double avgRootLod(0.), prevTA(-1);
+        for (const auto &pair : levelAreas)
+        {
+            // calculate VTS lod assuming 256^2 optimal texture tiles
+            double texelArea = pair.first / pair.second;
+            double tileArea = 256*256*texelArea;
+            double tileLod = 0.5*log2(sdsNode.extents.area() / tileArea);
+            tileLod += sdsNode.id.lod;
 
-    // ... ?
-    int firstLod = 15; // ?
-    //int numLevels = 9;
+            LOG(info4) << "Tree level " << level << " ~ VTS LOD " << tileLod;
 
-    for (auto &tile : inputTiles) {
-        tile.dstLod = firstLod + tile.depth;
+            if (!level || (prevTA / texelArea > 3.0)) // skip bad levels
+            {
+                avgRootLod += tileLod - level;
+                ++count;
+            }
+            prevTA = texelArea;
+            ++level;
+        }
+        avgRootLod /= count;
+        LOG(info2) << "avgRootLod = " << avgRootLod;
+
+        int rootLod(round(avgRootLod));
+        LOG(info4) << "Placing tree level 0 at VTS LOD " << rootLod << ".";
+        for (auto &tile : inputTiles) {
+            tile.dstLod = rootLod + tile.depth;
+        }
     }
 
     // TODO
@@ -995,7 +1049,9 @@ int LodTree2Vts::run()
     properties.credits = {1};
 
     // run the encoder
+    LOG(info4) << "Building tile mapping.";
     Encoder enc(output_, properties, createMode_, inputTiles, inputSrs, config_);
+
     LOG(info4) << "Encoding VTS tiles.";
     enc.run();
 
