@@ -20,6 +20,7 @@
 #include "../vts-libs/vts/meshop.hpp"
 #include "../vts-libs/vts/csconvertor.hpp"
 #include "../vts-libs/registry/po.hpp"
+#include "../vts-libs/tools/heightmap.hpp"
 
 #include "../tinyxml2/tinyxml2.h"
 
@@ -62,7 +63,7 @@ struct LodTreeExport
     math::Point3 origin;
     std::vector<LodTreeNode> blocks;
 
-    LodTreeExport(const fs::path &xmlPath);
+    LodTreeExport(const fs::path &xmlPath, const math::Point3 &offset);
 };
 
 
@@ -156,7 +157,8 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
 }
 
 
-LodTreeExport::LodTreeExport(const fs::path &xmlPath)
+LodTreeExport::LodTreeExport(const fs::path &xmlPath,
+                             const math::Point3 &offset)
 {
     xml::XMLDocument doc;
     auto *root = loadLodTreeXml(xmlPath, doc);
@@ -167,6 +169,7 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
     origin(0) = getDoubleAttr(local, "x");
     origin(1) = getDoubleAttr(local, "y");
     origin(2) = getDoubleAttr(local, "z");
+    origin += offset;
 
     // load all blocks ("Tiles")
     std::string strTile("Tile");
@@ -198,9 +201,11 @@ struct Config {
     std::string referenceFrame;
     int textureQuality;
     int maxLevel;
+    double offsetX, offsetY, offsetZ;
 
     Config()
         : textureQuality(85), maxLevel(-1)
+        , offsetX(0.), offsetY(0.), offsetZ(0.)
     {}
 };
 
@@ -257,7 +262,16 @@ void LodTree2Vts::configuration(po::options_description &cmdline
          , "Texture quality for JPEG texture encoding (0-100).")
 
         ("maxLevel", po::value(&config_.maxLevel)
+         ->default_value(config_.maxLevel)
          , "If not -1, ignore LODTree levels > maxLevel.")
+
+        ("offsetX", po::value(&config_.offsetX)->default_value(config_.offsetX),
+         "Force X shift of the model.")
+        ("offsetY", po::value(&config_.offsetY)->default_value(config_.offsetY),
+         "Force Y shift of the model.")
+        ("offsetZ", po::value(&config_.offsetZ)->default_value(config_.offsetZ),
+         "Force Z shift of the model.")
+
         ;
 
     pd.add("input", 1);
@@ -746,7 +760,7 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     Encoder::TileResult result;
     auto &tile(result.tile());
     vts::Mesh &mesh
-        (*(tile.mesh = std::make_shared<vts::Mesh>(/*config_.forceWatertight*/)));
+        (*(tile.mesh = std::make_shared<vts::Mesh>(false)));
     vts::RawAtlas::pointer patlas([&]() -> vts::RawAtlas::pointer
     {
         auto atlas(std::make_shared<vts::RawAtlas>());
@@ -768,7 +782,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             vts::SubMesh clipped(vts::clip(copy, clipExtents));
 
             if (!clipped.empty()) {
-                // convert mesh to destination physical SRS
+                // update mesh coverage mask
+                updateCoverage(mesh, clipped, nodeInfo.extents());
+
+                // convert to destination physical SRS
                 warpInPlace(sds2DstPhy, clipped);
 
                 // add to output
@@ -778,6 +795,8 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                 atlas.add(model->atlas.get(smIndex));
 
                 // TODO: update credits
+/*                const auto &credits(input.node().credits());
+                tile.credits.insert(credits.begin(), credits.end());*/
             }
             smIndex++;
         }
@@ -797,6 +816,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         tile.atlas.reset();
     }
 
+    // TODO: add external texture coordinates
+
+    // TODO: rasterize heightmap see vts02vts Encoder::generateHeightMap
+
     // done:
     return result;
 }
@@ -805,16 +828,51 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 void Encoder::finish(vts::TileSet &ts)
 {
     (void) ts;
+
+    // see vts02vts Encoder::finish, generate heightmaps (navtiles)
+
 #if 0
-    auto position(input_.getProperties().position);
+    HeightMap hm(std::move(hma_), referenceFrame()
+                 , config_.dtmExtractionRadius / ntSourceLodPixelSize_);
 
-    // convert initial position -- should work
-    const vts::CsConvertor nav2nav(input_.referenceFrame().model.navigationSrs
-                                   , referenceFrame().model.navigationSrs);
-    position.position = nav2nav(position.position);
+    HeightMap::BestPosition bestPosition;
 
-    // store
-    ts.setPosition(position);
+    // iterate in nt lod range backwards: iterate from start and invert forward
+    // lod into backward lod
+    for (const auto fLod : ntLodRange_) {
+        const vts::Lod lod(ntLodRange_.min + ntLodRange_.max - fLod);
+
+        // resize heightmap for given lod
+        hm.resize(lod);
+
+        // generate and store navtiles
+        traverse(ts.tileIndex(), lod
+                 , [&](const vts::TileId &tileId, vts::QTree::value_type mask)
+        {
+            // process only tiles with mesh
+            if (!(mask & vts::TileIndex::Flag::mesh)) { return; }
+
+            if (auto nt = hm.navtile(tileId)) {
+                ts.setNavTile(tileId, *nt);
+            }
+        });
+
+        if (lod == ntLodRange_.max) {
+            bestPosition = hm.bestPosition();
+        }
+    }
+
+    {
+        vr::Position pos;
+        pos.position = bestPosition.location;
+
+        pos.type = vr::Position::Type::objective;
+        pos.heightMode = vr::Position::HeightMode::fixed;
+        pos.orientation = { 0.0, -90.0, 0.0 };
+        pos.verticalExtent = bestPosition.verticalExtent;
+        pos.verticalFov = 90;
+        ts.setPosition(pos);
+    }
 #endif
 }
 
@@ -924,9 +982,19 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &csconv)
 
 int LodTree2Vts::run()
 {
+    math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
+    if (norm_2(offset) > 0.) {
+        LOG(info4) << "Using offset (" << config_.offsetX << ", "
+                   << config_.offsetY << ", " << config_.offsetZ << ").";
+    }
+
     // parse the XMLs
     LOG(info4) << "Parsing " << input_;
-    LodTreeExport lte(input_);
+    LodTreeExport lte(input_, offset);
+
+    lte.origin(0) += config_.offsetX;
+    lte.origin(1) += config_.offsetY;
+    lte.origin(2) += config_.offsetZ;
 
     // TODO: error checking (empty?)
     auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
