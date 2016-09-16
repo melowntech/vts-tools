@@ -197,9 +197,10 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath)
 struct Config {
     std::string referenceFrame;
     int textureQuality;
+    int maxLevel;
 
     Config()
-        : textureQuality(85)
+        : textureQuality(85), maxLevel(-1)
     {}
 };
 
@@ -242,8 +243,10 @@ void LodTree2Vts::configuration(po::options_description &cmdline
     cmdline.add_options()
         ("input", po::value(&input_)->required()
          , "Path to LODTreeExport.xml input file.")
+
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
+
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("referenceFrame", po::value(&config_.referenceFrame)->required()
@@ -253,6 +256,8 @@ void LodTree2Vts::configuration(po::options_description &cmdline
          ->default_value(config_.textureQuality)->required()
          , "Texture quality for JPEG texture encoding (0-100).")
 
+        ("maxLevel", po::value(&config_.maxLevel)
+         , "If not -1, ignore LODTree levels > maxLevel.")
         ;
 
     pd.add("input", 1);
@@ -817,13 +822,15 @@ void Encoder::finish(vts::TileSet &ts)
 //// main //////////////////////////////////////////////////////////////////////
 
 void collectInputTiles(const LodTreeNode &node, unsigned depth,
-                       InputTile::list &list)
+                       unsigned maxDepth, InputTile::list &list)
 {
     if (!node.modelPath.empty()) {
         list.emplace_back(list.size(), depth, &node);
     }
-    for (const auto &ch : node.children) {
-        collectInputTiles(ch, depth+1, list);
+    if (depth < maxDepth) {
+        for (const auto &ch : node.children) {
+            collectInputTiles(ch, depth+1, maxDepth, list);
+        }
     }
 }
 
@@ -952,7 +959,7 @@ int LodTree2Vts::run()
     // create a list of InputTiles
     InputTile::list inputTiles;
     for (const auto& block : lte.blocks) {
-        collectInputTiles(block, 0, inputTiles);
+        collectInputTiles(block, 0, config_.maxLevel, inputTiles);
     }
 
     // determine extents of the input tiles
@@ -996,7 +1003,8 @@ int LodTree2Vts::run()
             if (level && factor < 1.0) {
                 LOG(warn4)
                     << "Warning: level " << level << " has smaller resolution "
-                       "than previous level. This level should be removed.";
+                       "than previous level. This level should be removed (see "
+                       "also --maxLevel).";
             }
             else if (level && factor < 3.9) {
                 LOG(warn4)
