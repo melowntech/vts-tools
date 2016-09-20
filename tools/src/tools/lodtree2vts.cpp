@@ -831,17 +831,13 @@ inline math::Matrix4 mesh2grid(const math::Extents2 &extents
 
     auto es(size(extents));
 
-    // scales
-    math::Size2f scale((gridSize.width - 1) / es.width
-                       , (gridSize.height - 1) / es.height);
-
     // scale to grid
-    trafo(0, 0) = scale.width;
-    trafo(1, 1) = -scale.height;
+    trafo(0, 0) =  (gridSize.width - 1) / es.width;
+    trafo(1, 1) = -(gridSize.height - 1) / es.height;
 
     // place zero to upper-left corner
-    trafo(0, 3) = gridSize.width / 2.0;
-    trafo(1, 3) = gridSize.height / 2.0;
+    trafo(0, 3) = -trafo(0,0)*extents.ll(0);
+    trafo(1, 3) = -trafo(1,1)*extents.ll(1) + (gridSize.height - 1);
 
     return trafo;
 }
