@@ -31,6 +31,7 @@
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
+#include <assimp/postprocess.h>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -207,6 +208,7 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath,
 //// utility main //////////////////////////////////////////////////////////////
 
 struct Config {
+    std::string tileSetId;
     std::string referenceFrame;
     vs::CreditIds credits;
     int textureQuality;
@@ -266,6 +268,9 @@ void LodTree2Vts::configuration(po::options_description &cmdline
          , "Path to output (vts) tile set.")
 
         ("overwrite", "Existing tile set gets overwritten if set.")
+
+        ("id", po::value(&config_.tileSetId)->required()
+         , "Output tileset ID.")
 
         ("referenceFrame", po::value(&config_.referenceFrame)->required()
          , "Output reference frame.")
@@ -627,7 +632,7 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
     LOG(info2) << "Loading model " << id << " (" << path << ").";
 
     Assimp::Importer imp;
-    const aiScene *scene = imp.ReadFile(path.native(), 0);
+    const aiScene *scene = imp.ReadFile(path.native(), aiProcess_Triangulate);
     if (!scene) {
         LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
     }
@@ -1081,7 +1086,7 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &csconv)
     fs::path path(tile.node->modelPath);
 
     Assimp::Importer imp;
-    const aiScene *scene = imp.ReadFile(path.native(), 0);
+    const aiScene *scene = imp.ReadFile(path.native(), aiProcess_Triangulate);
     if (!scene) {
         LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
     }
@@ -1119,10 +1124,7 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &csconv)
         for (unsigned f = 0; f < mesh->mNumFaces; f++)
         {
             aiFace &face = mesh->mFaces[f];
-            if (face.mNumIndices != 3) {
-                LOGTHROW(err3, std::runtime_error) << path << ": faces with "
-                    << face.mNumIndices << " vertices not supported.";
-            }
+            assert(face.mNumIndices == 3);
 
             math::Point3 a(physPts[face.mIndices[0]]);
             math::Point3 b(physPts[face.mIndices[1]]);
@@ -1307,8 +1309,8 @@ int LodTree2Vts::run()
     // TODO
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
-    properties.id = "TEST";
-    properties.credits = {1};
+    properties.id = config_.tileSetId;
+    properties.credits.insert(config_.credits.begin(), config_.credits.end());
 
     // run the encoder
     LOG(info4) << "Building tile mapping.";
