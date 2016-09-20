@@ -486,8 +486,11 @@ public:
     {
         utility::Progress progress(inputTiles.size());
 
-        for (const auto &tile : inputTiles)
+        UTILITY_OMP(parallel for)
+        for (unsigned i = 0; i < inputTiles.size(); i++)
         {
+            const auto &tile(inputTiles[i]);
+
             const auto &srcExtents(tile.extents);
             const math::Points2 srcCorners = {
                 ul(srcExtents), ur(srcExtents), lr(srcExtents), ll(srcExtents)
@@ -514,14 +517,20 @@ public:
                 rasterizeTiles(dstRf, node, tile.dstLod, tr
                                , [&](const vts::TileId &id)
                 {
-                    sourceInfo_[id].push_back(tile.id);
-                    dstTi_.set(id, 1);
+                    UTILITY_OMP(critical)
+                    {
+                        sourceInfo_[id].push_back(tile.id);
+                        dstTi_.set(id, 1);
+                    }
                 });
             }
 
-            (++progress).report
-                (utility::Progress::ratio_t(5, 1000)
-                 , "building tile mapping ");
+            UTILITY_OMP(critical)
+            {
+                (++progress).report
+                    (utility::Progress::ratio_t(5, 1000)
+                     , "building tile mapping ");
+            }
         }
 
         // clone dst tile index to valid tree and make it complete
@@ -1024,10 +1033,13 @@ void Encoder::finish(vts::TileSet &ts)
         }
     }
 
-    // set tileset default position
+    // set tileset default position -- TODO
 /*    {
+        vts::CsConvertor sds2nav(???,
+                                 referenceFrame().model.navigationSrs);
+
         vr::Position pos;
-        pos.position = bestPosition.location;
+        pos.position = sds2nav(bestPosition.location);
 
         pos.type = vr::Position::Type::objective;
         pos.heightMode = vr::Position::HeightMode::fixed;
@@ -1302,7 +1314,6 @@ int LodTree2Vts::run()
                    << ntLodRange << ".";
     }
 
-    // TODO
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tileSetId;
