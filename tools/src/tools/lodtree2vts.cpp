@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 
 #include <boost/algorithm/string/split.hpp>
 
@@ -35,7 +36,7 @@
 
 #include <opencv2/highgui/highgui.hpp>
 
-#include <unordered_map>
+#include "data/empty.jpg.hpp"
 
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
@@ -673,25 +674,21 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
         optimizeMesh(submesh);
         mesh.add(submesh);
 
-        std::string texFile(textureFile(scene, aimesh, 0));
-
-        fs::path texPath;
-        if (!texFile.empty()) {
-            texPath = path.parent_path() / texFile;
-        } else {
-            texPath = "/home/jakub/empty.jpg"; // FIXME!!!
-        }
-
+        fs::path texPath(path.parent_path() / textureFile(scene, aimesh, 0));
         LOG(info2) << "Loading " << texPath;
+
         try {
             utility::ifstreambuf ifs(texPath.native(), std::ios::binary);
             vts::RawAtlas::Image buffer((std::istreambuf_iterator<char>(ifs)),
                                          std::istreambuf_iterator<char>());
-
             atlas.add(buffer);
         }
         catch (std::ifstream::failure e) {
-            LOG(warn3) << "Error loading " <<  texPath;
+            LOG(warn3) << "Error loading image " <<  texPath
+                       << ", using empty texture.";
+            vts::RawAtlas::Image buffer(data::empty_jpg, data::empty_jpg
+                                        + sizeof(data::empty_jpg));
+            atlas.add(buffer);
         }
     }
 }
