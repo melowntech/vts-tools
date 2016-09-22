@@ -1093,7 +1093,8 @@ void calcModelExtents(InputTile &tile, const vts::CsConvertor &csconv)
     Assimp::Importer imp;
     const aiScene *scene = imp.ReadFile(path.native(), aiProcess_Triangulate);
     if (!scene) {
-        LOGTHROW(err3, std::runtime_error) << "Error loading " << path;
+        LOGTHROW(err3, std::runtime_error) << "Error loading " << path
+                            << "( " << imp.GetErrorString() << " )";
     }
 
     tile.extents = math::Extents2(math::InvalidExtents{});
