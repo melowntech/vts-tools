@@ -28,6 +28,10 @@ find_package(CURL REQUIRED)
 find_package(magic REQUIRED)
 find_package(URIPARSER REQUIRED)
 
+# Asset import library for loading mesh files in lodtree2vts
+# (get it with 'apt-get install libassimp-dev')
+find_package(Assimp REQUIRED)
+
 find_package(LibProc REQUIRED)
 include_directories(${LIBPROC_INCLUDE_DIR})
 
