@@ -21,14 +21,14 @@
 
 #include "service/cmdline.hpp"
 
-#include "../vts-libs/vts.hpp"
-#include "../vts-libs/vts/encoder.hpp"
-#include "../vts-libs/vts/meshop.hpp"
-#include "../vts-libs/vts/csconvertor.hpp"
-#include "../vts-libs/registry/po.hpp"
-#include "../vts-libs/tools/heightmap.hpp"
+#include "vts-libs/vts.hpp"
+#include "vts-libs/vts/encoder.hpp"
+#include "vts-libs/vts/meshop.hpp"
+#include "vts-libs/vts/csconvertor.hpp"
+#include "vts-libs/registry/po.hpp"
+#include "vts-libs/vts/heightmap.hpp"
 
-#include "../tinyxml2/tinyxml2.h"
+#include "tinyxml2/tinyxml2.h"
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -822,7 +822,7 @@ private:
 
     TileMapping tileMap_;
     ModelCache modelCache_;
-    HeightMap::Accumulator hma_;
+    vts::HeightMap::Accumulator hma_;
 };
 
 /** Constructs transformation matrix that maps everything in extents into a grid
@@ -1003,10 +1003,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 
 void Encoder::finish(vts::TileSet &ts)
 {
-    HeightMap hm(std::move(hma_), referenceFrame()
+    vts::HeightMap hm(std::move(hma_), referenceFrame()
                  , config_.dtmExtractionRadius / ntSourceLodPixelSize_);
 
-    HeightMap::BestPosition bestPosition;
+    vts::HeightMap::BestPosition bestPosition;
 
     for (int lod = ntLodRange_.max; lod >= ntLodRange_.min; --lod)
     {
