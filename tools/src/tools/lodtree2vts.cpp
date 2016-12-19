@@ -36,11 +36,14 @@
 
 #include <opencv2/highgui/highgui.hpp>
 
+#include "tilemapping.hpp"
+
 #include "data/empty.jpg.hpp"
 
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
 namespace vts = vadstena::vts;
+namespace tools = vadstena::vts::tools;
 namespace po = boost::program_options;
 namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
@@ -132,7 +135,6 @@ xml::XMLElement* loadLodTreeXml(const fs::path &fname, xml::XMLDocument &doc)
     return root;
 }
 
-
 LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
                          const math::Point3 &rootOrigin)
 {
@@ -166,7 +168,6 @@ LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
         }
     }
 }
-
 
 LodTreeExport::LodTreeExport(const fs::path &xmlPath,
                              const math::Point3 &offset)
@@ -208,7 +209,21 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath,
 
 //// utility main //////////////////////////////////////////////////////////////
 
-struct Config {
+struct InputTile : public tools::InputTile
+{
+    const LodTreeNode *node;
+
+    mutable int loadCnt; // stats (how many times loaded to cache)
+
+    InputTile(int id, int depth, const LodTreeNode *node)
+        : tools::InputTile(id, depth), node(node)
+    {}
+
+    typedef std::vector<InputTile> list;
+};
+
+struct Config
+{
     std::string tileSetId;
     std::string referenceFrame;
     vs::CreditIds credits;
@@ -351,217 +366,6 @@ usage
     }
     return false;
 }
-
-
-//// tile mapping //////////////////////////////////////////////////////////////
-
-struct InputTile
-{
-    int id;
-    int depth;   // depth in input LodTree
-    int dstLod;  // output (vts) LOD
-
-    const LodTreeNode *node;
-
-    math::Extents2 extents; // tile extents in LodTree
-    double sdsArea, texArea;
-
-    mutable int loadCnt; // stats (how many times loaded to cache)
-
-    typedef std::vector<InputTile> list;
-
-    InputTile(int id, int depth, const LodTreeNode* node)
-        : id(id), depth(depth), dstLod(), node(node), extents()
-        , sdsArea(0.), texArea(0.), loadCnt()
-    {}
-};
-
-
-vts::TileRange::point_type
-tiled(const math::Size2f &ts, const math::Point2 &origin
-      , const math::Point2 &p)
-{
-    math::Point2 local(p - origin);
-    return vts::TileRange::point_type(local(0) / ts.width
-                                      , -local(1) / ts.height);
-}
-
-vts::TileRange tileRange(const vr::ReferenceFrame::Division::Node &node
-                         , vts::Lod localLod, const math::Points2 &points
-                         , double margin)
-{
-    const auto ts(vts::tileSize(node.extents, localLod));
-    // NB: origin is in upper-left corner and Y grows down
-    const auto origin(math::ul(node.extents));
-
-    math::Size2f isize(ts.width * margin, ts.height * margin);
-    std::array<math::Point2, 4> inflates{{
-            { -isize.width, +isize.height }
-            , { +isize.width, +isize.height }
-            , { +isize.width, -isize.height }
-            , { -isize.width, -isize.height }
-        }};
-
-    vts::TileRange r(math::InvalidExtents{});
-
-    for (const auto &p : points) {
-        for (const auto &inflate : inflates) {
-            update(r, tiled(ts, origin, p + inflate));
-        }
-    }
-
-    return r;
-}
-
-template <typename Op>
-void forEachTile(const vr::ReferenceFrame &referenceFrame
-                 , vts::Lod lod, const vts::TileRange &tileRange
-                 , Op op)
-{
-    typedef vts::TileRange::value_type Index;
-    for (Index j(tileRange.ll(1)), je(tileRange.ur(1)); j <= je; ++j) {
-        for (Index i(tileRange.ll(0)), ie(tileRange.ur(0)); i <= ie; ++i) {
-            op(vts::NodeInfo(referenceFrame, vts::TileId(lod, i, j)));
-        }
-    }
-}
-
-template <typename Op>
-void rasterizeTiles(const vr::ReferenceFrame &referenceFrame
-                    , const vr::ReferenceFrame::Division::Node &rootNode
-                    , vts::Lod lod, const vts::TileRange &tileRange
-                    , Op op)
-{
-    // process tile range
-    forEachTile(referenceFrame, lod, tileRange
-                , [&](const vts::NodeInfo &ni)
-    {
-        LOG(info1)
-            << std::fixed << "dst tile: "
-            << ni.nodeId() << ", " << ni.extents();
-
-        // TODO: check for incidence with Q; NB: clip margin must be taken into
-        // account
-
-        // check for root
-        if (ni.subtree().root().id == rootNode.id) {
-            op(vts::tileId(ni.nodeId()));
-        }
-    });
-}
-
-math::Points2 projectCorners(const vr::ReferenceFrame::Division::Node &node
-                             , const vts::CsConvertor &conv
-                             , const math::Points2 &src)
-{
-    math::Points2 dst;
-    try {
-        for (const auto &c : src) {
-            dst.push_back(conv(c));
-            LOG(info1) << std::fixed << "corner: "
-                       << c << " -> " << dst.back();
-            if (!inside(node.extents, dst.back())) {
-                // projected dst tile cannot fit inside this node's
-                // extents -> ignore
-                return {};
-            }
-        }
-    }
-    catch (std::exception) {
-        // whole tile cannot be projected -> ignore
-        return {};
-    }
-
-    // OK, we could convert whole tile into this reference system
-    return dst;
-}
-
-
-class TileMapping : boost::noncopyable
-{
-public:
-    TileMapping(const std::vector<InputTile> inputTiles
-                , const geo::SrsDefinition &inputSrs
-                , const vr::ReferenceFrame &dstRf
-                , double margin)
-    {
-        utility::Progress progress(inputTiles.size());
-
-        UTILITY_OMP(parallel for)
-        for (unsigned i = 0; i < inputTiles.size(); i++)
-        {
-            const auto &tile(inputTiles[i]);
-
-            const auto &srcExtents(tile.extents);
-            const math::Points2 srcCorners = {
-                ul(srcExtents), ur(srcExtents), lr(srcExtents), ll(srcExtents)
-            };
-
-            // for each destination division node
-            for (const auto &item : dstRf.division.nodes) {
-                const auto &node(item.second);
-                if (!node.valid()) { continue; }
-
-                const vts::CsConvertor csconv(inputSrs, node.srs);
-                auto dstCorners(projectCorners(node, csconv, srcCorners));
-
-                // ignore tiles that cannot be transformed
-                if (dstCorners.empty()) { continue; }
-
-                vts::Lod dstLocalLod(tile.dstLod - node.id.lod);
-
-                // generate tile range from bounding box of projected corners
-                auto tr(tileRange(node, dstLocalLod, dstCorners, margin));
-                LOG(info1) << "tile range: " << tr;
-
-                // TODO: add margin
-                rasterizeTiles(dstRf, node, tile.dstLod, tr
-                               , [&](const vts::TileId &id)
-                {
-                    UTILITY_OMP(critical)
-                    {
-                        sourceInfo_[id].push_back(tile.id);
-                        dstTi_.set(id, 1);
-                    }
-                });
-            }
-
-            UTILITY_OMP(critical)
-            {
-                (++progress).report
-                    (utility::Progress::ratio_t(5, 1000)
-                     , "building tile mapping ");
-            }
-        }
-
-        // clone dst tile index to valid tree and make it complete
-        validTree_ = vts::TileIndex
-            (vts::LodRange(0, dstTi_.maxLod()), &dstTi_);
-        validTree_.complete();
-    }
-
-    const vts::TileIndex* validTree() const { return &validTree_; }
-
-    /// Get a list of source tiles that project into destination 'tileId'.
-    const std::vector<int>& source(const vts::TileId &tileId) const
-    {
-        auto fsourceInfo(sourceInfo_.find(tileId));
-        if (fsourceInfo == sourceInfo_.end()) { return emptySource_; }
-        return fsourceInfo->second;
-    }
-
-    std::size_t size() const { return sourceInfo_.size(); }
-
-private:
-    std::map<vts::TileId, std::vector<int>> sourceInfo_;
-    vts::TileIndex dstTi_;
-    vts::TileIndex validTree_;
-
-    static const std::vector<int> emptySource_;
-};
-
-// keep empty, used as placeholder!
-const std::vector<int> TileMapping::emptySource_;
 
 
 //// import + cache ////////////////////////////////////////////////////////////
@@ -820,7 +624,7 @@ private:
     double ntSourceLodPixelSize_;
     const Config config_;
 
-    TileMapping tileMap_;
+    tools::TileMapping tileMap_;
     ModelCache modelCache_;
     vts::HeightMap::Accumulator hma_;
 };
