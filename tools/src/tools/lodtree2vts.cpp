@@ -1,6 +1,5 @@
 #include <cstdlib>
 #include <string>
-#include <unordered_map>
 
 #include <boost/algorithm/string/split.hpp>
 
@@ -37,6 +36,7 @@
 #include <opencv2/highgui/highgui.hpp>
 
 #include "tilemapping.hpp"
+#include "importutil.hpp"
 
 #include "data/empty.jpg.hpp"
 
@@ -395,52 +395,6 @@ std::string textureFile(const aiScene *scene, const aiMesh *mesh, int channel)
     return {texFile.C_Str()};
 }
 
-/// Remove duplicate vertices introduced by AssImp
-void optimizeMesh(vts::SubMesh &mesh)
-{
-    auto hash2 = [](const math::Point2 &p) -> std::size_t {
-        return p(0)*218943212 + p(1)*168875421;
-    };
-    auto hash3 = [](const math::Point3 &p) -> std::size_t {
-        return p(0)*218943212 + p(1)*168875421 + p(2)*385120205;
-    };
-
-    std::unordered_map<math::Point2, int, decltype(hash2)> map2(1024, hash2);
-    std::unordered_map<math::Point3, int, decltype(hash3)> map3(1024, hash3);
-
-    // assign unique indices to vertices and texcoords
-    for (const auto &pt : mesh.vertices) {
-        int &idx(map3[pt]);
-        if (!idx) { idx = map3.size(); }
-    }
-    for (const auto &pt : mesh.tc) {
-        int &idx(map2[pt]);
-        if (!idx) { idx = map2.size(); }
-    }
-
-    // change face indices
-    for (auto &f : mesh.faces) {
-        for (int i = 0; i < 3; i++) {
-            f(i) = map3[mesh.vertices[f(i)]] - 1;
-        }
-    }
-    for (auto &f : mesh.facesTc) {
-        for (int i = 0; i < 3; i++) {
-            f(i) = map2[mesh.tc[f(i)]] - 1;
-        }
-    }
-
-    // update vertices, tc
-    mesh.vertices.resize(map3.size());
-    for (const auto &item : map3) {
-        mesh.vertices[item.second - 1] = item.first;
-    }
-    mesh.tc.resize(map2.size());
-    for (const auto &item : map2) {
-        mesh.tc[item.second - 1] = item.first;
-    }
-}
-
 void Model::load(const fs::path &path, const math::Point3 &origin)
 {
     LOG(info2) << "Loading model " << id << " (" << path << ").";
@@ -475,7 +429,9 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
             submesh.facesTc.emplace_back(idx[0], idx[1], idx[2]);
         }
 
+        // remove duplicate vertices introduced by AssImp
         optimizeMesh(submesh);
+
         mesh.add(submesh);
 
         fs::path texPath(path.parent_path() / textureFile(scene, aimesh, 0));
