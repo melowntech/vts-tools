@@ -212,11 +212,19 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath,
 struct InputTile : public tools::InputTile
 {
     const LodTreeNode *node;
+    const geo::SrsDefinition &srs;
+
+    math::Extents2 extents;
+    double sdsArea, texArea;
 
     mutable int loadCnt; // stats (how many times loaded to cache)
 
-    InputTile(int id, int depth, const LodTreeNode *node)
-        : tools::InputTile(id, depth), node(node)
+    virtual math::Points2 projectCorners(
+            const vr::ReferenceFrame::Division::Node &node) const;
+
+    InputTile(int id, int depth, const LodTreeNode *node,
+              const geo::SrsDefinition &srs)
+        : tools::InputTile(id, depth), node(node), srs(srs)
     {}
 
     typedef std::vector<InputTile> list;
@@ -229,7 +237,7 @@ struct Config
     vs::CreditIds credits;
     int textureQuality;
     int maxLevel;
-    unsigned int ntLodPixelSize;
+    unsigned int ntLodPixelSize; // FIXME: int?
     double dtmExtractionRadius;
     double offsetX, offsetY, offsetZ;
 
@@ -430,7 +438,7 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
         }
 
         // remove duplicate vertices introduced by AssImp
-        optimizeMesh(submesh);
+        tools::optimizeMesh(submesh);
 
         mesh.add(submesh);
 
@@ -453,7 +461,6 @@ void Model::load(const fs::path &path, const math::Point3 &origin)
     }
 }
 
-
 class ModelCache
 {
 public:
@@ -474,7 +481,6 @@ private:
     std::list<Model::pointer> cache_;
     std::mutex mutex_;
 };
-
 
 Model::pointer ModelCache::get(int id)
 {
@@ -544,19 +550,16 @@ public:
             , vts::CreateMode mode
             , const InputTile::list &inputTiles
             , const geo::SrsDefinition &inputSrs
-            , vs::LodRange &ntLodRange
-            , int ntSourceLod, double ntSourceLodPixelSize
+            , const tools::NavTileParams &nt
             , const Config &config)
         : vts::Encoder(path, properties, mode)
         , inputTiles_(inputTiles)
         , inputSrs_(inputSrs)
-        , ntLodRange_(ntLodRange)
-        , ntSourceLod_(ntSourceLod)
-        , ntSourceLodPixelSize_(ntSourceLodPixelSize)
+        , nt_(nt)
         , config_(config)
-        , tileMap_(inputTiles, inputSrs, referenceFrame(), 1.0/*config.maxClipMargin()*/)
+        , tileMap_(inputTiles, referenceFrame(), 1.0/*config.maxClipMargin()*/)
         , modelCache_(inputTiles, 128)
-        , hma_(ntSourceLod_)
+        , hma_(nt_.sourceLod)
     {
         setConstraints(Constraints().setValidTree(tileMap_.validTree()));
         setEstimatedTileCount(tileMap_.size());
@@ -575,87 +578,13 @@ private:
 
     const InputTile::list &inputTiles_;
     const geo::SrsDefinition &inputSrs_;
-    vs::LodRange ntLodRange_;
-    int ntSourceLod_;
-    double ntSourceLodPixelSize_;
+    const tools::NavTileParams &nt_;
     const Config config_;
 
     tools::TileMapping tileMap_;
     ModelCache modelCache_;
     vts::HeightMap::Accumulator hma_;
 };
-
-/** Constructs transformation matrix that maps everything in extents into a grid
- *  of defined size so that grid (0, 0) matches the upper-left extents corner
- *  and grid(gridSize.width - 1, gridSize.width - 1) matches the lower-right
- *  extents corner.
- */
-inline math::Matrix4 mesh2grid(const math::Extents2 &extents
-                              , const math::Size2 &gridSize)
-{
-    math::Matrix4 trafo(ublas::identity_matrix<double>(4));
-
-    auto es(size(extents));
-
-    // scale to grid
-    trafo(0, 0) =  (gridSize.width - 1) / es.width;
-    trafo(1, 1) = -(gridSize.height - 1) / es.height;
-
-    // place zero to upper-left corner
-    trafo(0, 3) = -trafo(0,0)*extents.ll(0);
-    trafo(1, 3) = -trafo(1,1)*extents.ll(1) + (gridSize.height - 1);
-
-    return trafo;
-}
-
-template <typename Op>
-void rasterizeMesh(const vts::SubMesh &submesh, const math::Matrix4 &trafo
-                   , const math::Size2 &rasterSize, Op op)
-{
-    std::vector<imgproc::Scanline> scanlines;
-    cv::Point3f tri[3];
-    for (const auto &face : submesh.faces) {
-        for (int i : { 0, 1, 2 }) {
-            auto p(transform(trafo, submesh.vertices[face(i)]));
-            tri[i].x = p(0); tri[i].y = p(1); tri[i].z = p(2);
-        }
-
-        scanlines.clear();
-        imgproc::scanConvertTriangle(tri, 0, rasterSize.height, scanlines);
-
-        for (const auto &sl : scanlines) {
-            imgproc::processScanline(sl, 0, rasterSize.width, op);
-        }
-    }
-}
-
-void Encoder::generateHeightMap(const vts::TileId &tileId
-                                , const vts::SubMesh &submesh
-                                , const math::Extents2 &extents)
-{
-    cv::Mat *hm;
-    UTILITY_OMP(critical)
-    hm = &hma_.tile(tileId);
-
-    // invalid heightmap value (i.e. initial value) is +oo and we take minimum
-    // of all rasterized heights in given place
-    rasterizeMesh(submesh, mesh2grid(extents, hma_.tileSize())
-                  , hma_.tileSize()
-                  , [&](int x, int y, float z)
-    {
-        auto &value(hm->at<float>(y, x));
-        if (z < value) { value = z; }
-    });
-}
-
-void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
-{
-    // just convert vertices
-    for (auto &v : sm.vertices) {
-        // convert vertex in-place
-        v = conv(v);
-    }
-}
 
 Encoder::TileResult
 Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
@@ -711,7 +640,7 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         {
             // copy mesh and convert it to destination SDS...
             vts::SubMesh copy(submesh);
-            warpInPlace(src2DstSds, copy);
+            tools::warpInPlace(src2DstSds, copy);
 
             // ...where we clip it
             vts::SubMesh clipped(vts::clip(copy, clipExtents));
@@ -721,12 +650,13 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                 updateCoverage(mesh, clipped, nodeInfo.extents());
 
                 // rasterize heightmap
-                if (tileId.lod == ntSourceLod_) {
-                    generateHeightMap(tileId, clipped, nodeInfo.extents());
+                if (tileId.lod == nt_.sourceLod) {
+                    tools::generateHeightMap(hma_, tileId, clipped,
+                                             nodeInfo.extents());
                 }
 
                 // convert to destination physical SRS
-                warpInPlace(sds2DstPhy, clipped);
+                tools::warpInPlace(sds2DstPhy, clipped);
 
                 // add to output
                 mesh.add(clipped);
@@ -764,11 +694,11 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 void Encoder::finish(vts::TileSet &ts)
 {
     vts::HeightMap hm(std::move(hma_), referenceFrame()
-                 , config_.dtmExtractionRadius / ntSourceLodPixelSize_);
+                      , config_.dtmExtractionRadius / nt_.sourceLodPixelSize);
 
     vts::HeightMap::BestPosition bestPosition;
 
-    for (int lod = ntLodRange_.max; lod >= ntLodRange_.min; --lod)
+    for (int lod = nt_.lodRange.max; lod >= nt_.lodRange.min; --lod)
     {
         // resize heightmap for given lod
         hm.resize(lod);
@@ -785,7 +715,7 @@ void Encoder::finish(vts::TileSet &ts)
             }
         });
 
-        if (lod == ntLodRange_.max) {
+        if (lod == nt_.lodRange.max) {
             bestPosition = hm.bestPosition();
         }
     }
@@ -811,14 +741,15 @@ void Encoder::finish(vts::TileSet &ts)
 //// main //////////////////////////////////////////////////////////////////////
 
 void collectInputTiles(const LodTreeNode &node, unsigned depth,
-                       unsigned maxDepth, InputTile::list &list)
+                       unsigned maxDepth, InputTile::list &list,
+                       const geo::SrsDefinition &srs)
 {
     if (!node.modelPath.empty()) {
-        list.emplace_back(list.size(), depth, &node);
+        list.emplace_back(list.size(), depth, &node, srs);
     }
     if (depth < maxDepth) {
         for (const auto &ch : node.children) {
-            collectInputTiles(ch, depth+1, maxDepth, list);
+            collectInputTiles(ch, depth+1, maxDepth, list, srs);
         }
     }
 }
@@ -842,6 +773,38 @@ int imageArea(const fs::path &path)
         LOGTHROW(err3, std::runtime_error) << "Could not load " << path;
     }
     return img.rows * img.cols;
+}
+
+/** Convert tile corners into node.srs, check if they are in node.extents.
+ */
+math::Points2
+InputTile::projectCorners(const vr::ReferenceFrame::Division::Node &node) const
+{
+    math::Points2 corners = {
+        ul(extents), ur(extents), lr(extents), ll(extents)
+    };
+
+    const vts::CsConvertor conv(srs, node.srs);
+
+    math::Points2 dst;
+    dst.reserve(4);
+    try {
+        for (const auto &c : corners) {
+            dst.push_back(conv(c));
+            LOG(info1) << std::fixed << "corner: " << c << " -> " << dst.back();
+            if (!inside(node.extents, dst.back())) {
+                // projected dst tile cannot fit inside this node's
+                // extents -> ignore
+                return {};
+            }
+        }
+    }
+    catch (std::exception) {
+        // whole tile cannot be projected -> ignore
+        return {};
+    }
+    // OK, we could convert whole tile into this reference system
+    return dst;
 }
 
 /** Calculate and set tile.extents, tile.sdsArea, tile.texArea
@@ -926,34 +889,17 @@ int LodTree2Vts::run()
     auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
 
     // find a suitable reference frame division node
-    boost::optional<vts::CsConvertor> convToSds;
-    vr::ReferenceFrame::Division::Node sdsNode;
-    {
-        const auto &rf(vr::system.referenceFrames(config_.referenceFrame));
-        int maxLod(-1);
-        for (const auto &pair : rf.division.nodes) {
-            const auto &node(pair.second);
-            if (!node.valid()) { continue; }
+    auto sdsNode =
+        tools::findSpatialDivisionNode(
+                vr::system.referenceFrames(config_.referenceFrame),
+                inputSrs, lte.origin);
 
-            const vts::CsConvertor csconv(inputSrs, node.srs);
-            if (math::inside(node.extents, csconv(lte.origin))
-                && node.id.lod > maxLod)
-            {
-                convToSds = csconv;
-                sdsNode = node;
-                maxLod = node.id.lod;
-            }
-        }
-        if (!convToSds) {
-            LOGTHROW(err3, std::runtime_error)
-                << "Couldn't find reference frame node for " << lte.origin;
-        }
-    }
+    vts::CsConvertor csconv(inputSrs, sdsNode.srs);
 
     // create a list of InputTiles
     InputTile::list inputTiles;
     for (const auto& block : lte.blocks) {
-        collectInputTiles(block, 0, config_.maxLevel, inputTiles);
+        collectInputTiles(block, 0, config_.maxLevel, inputTiles, inputSrs);
     }
 
     // determine extents of the input tiles
@@ -962,7 +908,7 @@ int LodTree2Vts::run()
     {
         auto &tile(inputTiles[i]);
         LOG(info2) << "Getting extents of " << tile.node->modelPath;
-        calcModelExtents(tile, *convToSds);
+        calcModelExtents(tile, csconv);
 
         LOG(info1)
             << "\ntile.extents = " << std::fixed << tile.extents
@@ -970,107 +916,9 @@ int LodTree2Vts::run()
             << "\ntile.texArea = " << tile.texArea << "\n";
     }
 
-    // calculate texel size of each tree level
-    std::vector<double> texelArea;
-    {
-        std::vector<std::pair<double, double> > areas;
-        for (const auto &tile : inputTiles)
-        {
-            if (size_t(tile.depth) >= areas.size()) {
-                areas.emplace_back(0.0, 0.0);
-            }
-            auto &pair(areas[tile.depth]);
-            pair.first += tile.sdsArea;
-            pair.second += tile.texArea;
-        }
-        for (const auto &pair : areas) {
-            texelArea.push_back(pair.first / pair.second);
-        }
-    }
-
-    // print resolutions and warnings
-    {
-        int level(0);
-        for (double ta : texelArea) {
-            if (!level) {
-                LOG(info3) << "Tree level " << level
-                           << ": avg texel area = " << ta;
-            }
-            else {
-                double factor(texelArea[level-1] / ta);
-                LOG(info3) << "Tree level " << level
-                           << ": avg texel area = " << ta
-                           << " (resolution " << sqrt(factor)
-                           << " times previous)";
-
-                if (level && factor < 1.0) {
-                    LOG(warn3)
-                        << "Warning: level " << level << " has smaller "
-                           "resolution than previous level. This level should "
-                           "be removed (see also --maxLevel).";
-                }
-                else if (level && factor < 3.9) {
-                    LOG(warn3)
-                        << "Warning: level " << level << " does not have "
-                           "double the resolution of previous level.";
-                }
-            }
-            ++level;
-        }
-    }
-
-    // LOD assignment
-    vs::LodRange ntLodRange;
-    int ntSourceLod(-1);
-    double ntSourceLodPixelSize(1.0);
-    {
-        int level(0), count(0);
-        double avgRootLod(0.);
-        for (double txa : texelArea)
-        {
-            // calculate VTS lod assuming 256^2 optimal texture tiles
-            double tileArea = 256*256*txa;
-            double tileLod = 0.5*log2(sdsNode.extents.area() / tileArea);
-            tileLod += sdsNode.id.lod;
-
-            LOG(info3) << "Tree level " << level << " ~ VTS LOD " << tileLod;
-
-            if (!level || (texelArea[level-1] / txa > 3.0)) // skip bad levels
-            {
-                avgRootLod += tileLod - level;
-                ++count;
-            }
-            ++level;
-        }
-        avgRootLod /= count;
-        LOG(info2) << "avgRootLod = " << avgRootLod;
-
-        int rootLod(round(avgRootLod));
-        LOG(info3) << "Placing tree level 0 at VTS LOD " << rootLod << ".";
-
-        for (auto &tile : inputTiles) {
-            tile.dstLod = rootLod + tile.depth;
-            ntSourceLod = std::max(tile.dstLod, ntSourceLod);
-        }
-
-        // determine LOD for heightmap extraction
-        level = 0;
-        for (double txa : texelArea) {
-            if (std::sqrt(txa) <= config_.ntLodPixelSize) { // TODO: correct?
-                ntSourceLod = rootLod + level;
-                ntSourceLodPixelSize = std::sqrt(txa); // FIXME
-                break;
-            }
-            ++level;
-        }
-        LOG(info3) << "Navtile data will be extracted at LOD " << ntSourceLod;
-
-        // TODO: is this correct?
-        ntLodRange.min = rootLod;
-        ntLodRange.max = ntSourceLod;
-        LOG(info3) << "Navtile data will be generated in LOD range: "
-                   << ntLodRange << ".";
-    }
+    // assign LODs to tiles based on texture resolution
+    tools::NavTileParams ntParams =
+            tools::assignTileLods(inputTiles, sdsNode, config_.ntLodPixelSize);
 
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
@@ -1080,8 +928,7 @@ int LodTree2Vts::run()
     // run the encoder
     LOG(info4) << "Building tile mapping.";
     Encoder enc(output_, properties, createMode_, inputTiles, inputSrs,
-                ntLodRange, ntSourceLod, ntSourceLodPixelSize,
-                config_);
+                ntParams, config_);
 
     LOG(info4) << "Encoding VTS tiles.";
     enc.run();
