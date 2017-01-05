@@ -212,7 +212,7 @@ LodTreeExport::LodTreeExport(const fs::path &xmlPath,
 struct InputTile : public tools::InputTile
 {
     const LodTreeNode *node;
-    const geo::SrsDefinition &srs;
+    const geo::SrsDefinition *srs;
 
     math::Extents2 extents;
     double sdsArea, texArea;
@@ -224,7 +224,7 @@ struct InputTile : public tools::InputTile
 
     InputTile(int id, int depth, const LodTreeNode *node,
               const geo::SrsDefinition &srs)
-        : tools::InputTile(id, depth), node(node), srs(srs)
+        : tools::InputTile(id, depth), node(node), srs(&srs)
     {}
 
     typedef std::vector<InputTile> list;
@@ -784,7 +784,7 @@ InputTile::projectCorners(const vr::ReferenceFrame::Division::Node &node) const
         ul(extents), ur(extents), lr(extents), ll(extents)
     };
 
-    const vts::CsConvertor conv(srs, node.srs);
+    const vts::CsConvertor conv(*srs, node.srs);
 
     math::Points2 dst;
     dst.reserve(4);
