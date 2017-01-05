@@ -34,3 +34,6 @@
 [submodule "externals/geometry"]
 	path = externals/geometry
 	url = ../../lib/geometry
+[submodule "externals/vef"]
+	path = externals/vef
+	url = ../../vadstena/vef
