@@ -53,6 +53,7 @@ add_subdirectory(src/tinyxml2)
 # vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
 add_subdirectory(src/vts-libs)
+add_subdirectory(src/vef)
 
 # tools
 add_subdirectory(src/tools)
