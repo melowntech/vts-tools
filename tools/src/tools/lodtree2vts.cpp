@@ -293,7 +293,7 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
         ("overwrite", "Existing tile set gets overwritten if set.")
 
-        ("id", po::value(&config_.tileSetId)->required()
+        ("tilesetId", po::value(&config_.tileSetId)->required()
          , "Output tileset ID.")
 
         ("referenceFrame", po::value(&config_.referenceFrame)->required()
