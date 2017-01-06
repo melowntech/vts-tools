@@ -36,3 +36,8 @@ add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2vts ${MODULE_DEFINITIONS})
 buildsys_binary(vef2vts)
+
+# ------------------------------------------------------------------------
+# installation
+install(TARGETS  
+        RUNTIME DESTINATION bin COMPONENT main)
