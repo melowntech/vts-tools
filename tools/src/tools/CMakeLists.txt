@@ -29,8 +29,9 @@ buildsys_target_compile_definitions(vtstools ${MODULE_DEFINITIONS})
 define_module(BINARY vef2vts
   DEPENDS vtstools vts-libs vef dbglog service)
 set(vef2vts_SOURCES
-    vef2vts.cpp
-    )
+  vef2vts.cpp
+  tmptileset.hpp tmptileset.cpp
+  )
 
 add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})

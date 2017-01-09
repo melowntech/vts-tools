@@ -26,6 +26,8 @@
 #include "imgproc/scanconversion.hpp"
 #include "imgproc/jpeg.hpp"
 
+#include "geometry/parse-obj.hpp"
+
 #include "geo/csconvertor.hpp"
 #include "geo/coordinates.hpp"
 
@@ -41,11 +43,14 @@
 
 #include "vef/vef.hpp"
 
+#include "./tmptileset.hpp"
+
 
 namespace po = boost::program_options;
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
 namespace vts = vadstena::vts;
+namespace tools = vadstena::vts::tools;
 namespace vef = vadstena::vef;
 namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
@@ -338,72 +343,11 @@ public:
     SourceInfoBuilder(const vef::VadstenaArchive &archive
                       , const vr::ReferenceFrame &rf
                       , double margin)
+        : srcSrs_(*archive.manifest().srs)
     {
         (void) archive;
         (void) rf;
         (void) margin;
-
-#if 0
-        const auto &srcRf(tileset.referenceFrame());
-        utility::Progress progress(tileset.tileIndex().count());
-
-        traverse(tileset.tileIndex()
-                 , [&](const vts::TileId &srcId, vts::QTree::value_type flags)
-        {
-            (++progress).report
-                (utility::Progress::ratio_t(5, 1000)
-                 , "building tile mapping ");
-            if (!vts::TileIndex::Flag::isReal(flags)) { return; }
-
-            vts::NodeInfo ni(srcRf, srcId);
-            if (!ni.valid()) { return; }
-
-            const auto &srcExtents(ni.extents());
-            const math::Points2 srcCorners = {
-                ul(srcExtents), ur(srcExtents), lr(srcExtents), ll(srcExtents)
-            };
-
-            // for each destination node
-            for (const auto &item : dstRf.division.nodes) {
-                const auto &node(item.second);
-                if (!node.valid()) { continue; }
-                const vts::CsConvertor csconv(ni.srs(), node.srs);
-
-                auto dstCorners(projectCorners(node, csconv, srcCorners));
-
-                // ignore tiles that cannot be transformed
-                if (dstCorners.empty()) { continue; }
-
-                // find best tile size
-                auto bta(bestTileArea(dstCorners));
-
-                // find such the closest tile to the best tile size
-                auto dstLocalLod(bestLod(node, bta));
-                auto dstLod(node.id.lod + dstLocalLod);
-
-                LOG(info1)
-                    << "Best tile area: " << bta << " -> LOD: " << dstLod
-                    << " (node's local LOD: " << dstLocalLod << ").";
-
-                // generate tile range from corners
-                auto tr(tileRange(node, dstLocalLod, dstCorners, margin));
-                LOG(info1) << "tile range: " << tr;
-
-                // TODO: add margin
-                rasterizeTiles(dstRf, node, dstLod, tr
-                               , [&](const vts::TileId &id)
-                {
-                    sourceInfo_[id].push_back(srcId);
-                    dstTi_.set(id, 1);
-                });
-            }
-        });
-
-        // clone dst tile index to valid tree and make it complete
-        validTree_ = vts::TileIndex
-            (vts::LodRange(0, dstTi_.maxLod()), &dstTi_);
-        validTree_.complete();
-#endif
     }
 
     const vts::TileIndex* validTree() const { return &validTree_; }
@@ -417,12 +361,160 @@ public:
     std::size_t size() const { return sourceInfo_.size(); }
 
 private:
+    const geo::SrsDefinition srcSrs_;
     SourceInfo sourceInfo_;
     vts::TileIndex dstTi_;
     vts::TileIndex validTree_;
 
     static const vts::TileId::list emptySource_;
 };
+
+class ObjLoader : public geometry::ObjParserBase {
+public:
+    ObjLoader()
+        : textureId_(0)
+    {}
+
+    vts::Mesh mesh() const { return mesh_; }
+
+private:
+    typedef std::vector<int> VertexMap;
+    typedef std::vector<VertexMap> VertexMaps;
+
+    void addVertex(const Vector3d &v) {
+        vertices_.emplace_back(v.x, v.y, v.z);
+    }
+
+    void addTexture(const Vector3d &t) {
+        tc_.emplace_back(t.x, t.y);
+    }
+
+    template <typename VertexType>
+    void addFace(const int f[3], vts::Face &face
+                 , const std::vector<VertexType> &vertices
+                 , std::vector<VertexType> &out
+                 , VertexMap &vmap)
+    {
+
+        for (int i(0); i < 3; ++i) {
+            const std::size_t src(f[i]);
+            // ensure space
+            if (vmap.size() <= src) { vmap.resize(src + 1, -1); }
+
+            auto &dst(vmap[src]);
+            if (dst < 0) {
+                // new mapping
+                dst = out.size();
+                out.push_back(vertices[src]);
+            }
+            face[i] = dst;
+        }
+    }
+
+    void addFacet(const Facet &f) {
+        auto &sm(mesh_.submeshes[textureId_]);
+
+        sm.faces.emplace_back();
+        addFace(f.v, sm.faces.back(), vertices_, sm.vertices
+                , vMaps_[textureId_]);
+
+        sm.facesTc.emplace_back();
+        addFace(f.t, sm.facesTc.back(), tc_, sm.tc, tcMaps_[textureId_]);
+    }
+
+    void useMaterial(const std::string &m) {
+        // get new material index
+        textureId_ = boost::lexical_cast<unsigned int>(m);
+
+        // ensure space in all lists
+        if (mesh_.submeshes.size() <= textureId_) {
+            mesh_.submeshes.resize(textureId_ + 1);
+            vMaps_.resize(textureId_ + 1);
+            tcMaps_.resize(textureId_ + 1);
+        }
+    }
+
+    void addNormal(const Vector3d&) { /*ignored*/ }
+    void materialLibrary(const std::string&) { /*ignored*/ }
+
+    math::Points3 vertices_;
+    math::Points2 tc_;
+    VertexMaps vMaps_;
+    VertexMaps tcMaps_;
+
+    vts::Mesh mesh_;
+    unsigned int textureId_;
+};
+
+class Cutter {
+public:
+    Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
+           , const vr::ReferenceFrame &rf)
+        : tmpset_(tmpset), manifest_(manifest), rf_(rf)
+        , inputSrs_(*manifest_.srs)
+    {
+        cut();
+    }
+
+private:
+    void cut();
+    void windowCut(const vef::Window &window);
+
+    tools::TmpTileset &tmpset_;
+    const vef::Manifest &manifest_;
+    const vr::ReferenceFrame &rf_;
+    const geo::SrsDefinition &inputSrs_;
+};
+
+void Cutter::cut()
+{
+    for (const auto &loddedWindow : manifest_.windows) {
+        LOG(info3) << "Processing window LODs from: " << loddedWindow.path;
+        for (const auto &window : loddedWindow.lods) {
+            windowCut(window);
+        }
+    }
+}
+
+void Cutter::windowCut(const vef::Window &window)
+{
+    // load mesh
+    ObjLoader loader;
+    LOG(info3) << "Loading window mesh from: " << window.mesh.path;
+    if (!loader.parse(window.mesh.path)) {
+        LOGTHROW(err2, std::runtime_error)
+            << "Unable to load mesh from " << window.mesh.path << ".";
+    }
+
+    std::vector<cv::Mat> textures;
+    for (const auto &texture : window.atlas) {
+        LOG(info3) << "Loading window texture from: " << texture.path;
+        textures.push_back(cv::imread(texture.path.string()));
+        if (!textures.back().data) {
+            LOGTHROW(err2, std::runtime_error)
+                << "Unable to load texture from " << texture.path << ".";
+        }
+    }
+
+    const auto &mesh(loader.mesh());
+
+    // process all RF nodes
+    for (const auto &item : rf_.division.nodes) {
+        const auto &node(item.second);
+        if (!node.valid()) { continue; }
+
+        // try to convert mesh into node's SRS
+        const vts::CsConvertor conv(inputSrs_, node.srs);
+
+        for (const auto &sm : mesh.submeshes) {
+            math::Points3d vertices;
+            vertices.reserve(sm.vertices.size());
+            for (const auto &v : sm.vertices) {
+                vertices.push_back(conv(v));
+            }
+        }
+    }
+}
 
 // keep empty, used as placeholder!
 const vts::TileId::list SourceInfoBuilder::emptySource_;
@@ -438,7 +530,9 @@ public:
         , config_(config), input_(input)
         , srcInfo_(input_, referenceFrame(), config.maxClipMargin())
         , inputSrs_(*input.manifest().srs)
+        , tmpset_(path / "tmp")
     {
+        Cutter(tmpset_, input.manifest(), referenceFrame());
         setConstraints(Constraints().setValidTree(srcInfo_.validTree()));
         setEstimatedTileCount(srcInfo_.size());
     }
@@ -449,7 +543,9 @@ private:
              , const TileResult&)
         UTILITY_OVERRIDE;
 
-    virtual void finish(vts::TileSet&);
+    void prepare(const vef::Manifest &manifest);
+
+    virtual void finish(vts::TileSet &ts);
 
     const Config config_;
 
@@ -458,6 +554,8 @@ private:
     SourceInfoBuilder srcInfo_;
 
     const geo::SrsDefinition inputSrs_;
+
+    tools::TmpTileset tmpset_;
 };
 
 void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
