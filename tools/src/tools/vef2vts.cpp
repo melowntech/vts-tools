@@ -40,6 +40,7 @@
 #include "vts-libs/vts/meshopinput.hpp"
 #include "vts-libs/vts/meshop.hpp"
 #include "vts-libs/vts/heightmap.hpp"
+#include "vts-libs/vts/math.hpp"
 
 #include "vef/vef.hpp"
 
@@ -213,18 +214,10 @@ usage
     return false;
 }
 
-double triangleArea(const math::Point2 &a, const math::Point2 &b,
-                    const math::Point2 &c)
-{
-    return std::abs
-        (math::crossProduct(math::Point2(b - a), math::Point2(c - a)))
-        / 2.0;
-}
-
 double bestTileArea(const math::Points2 &corners)
 {
-    return (triangleArea(corners[0], corners[1], corners[2])
-            + triangleArea(corners[2], corners[3], corners[0]));
+    return (vts::triangleArea(corners[0], corners[1], corners[2])
+            + vts::triangleArea(corners[2], corners[3], corners[0]));
 }
 
 int bestLod(const vr::ReferenceFrame::Division::Node &node, double area)
@@ -372,8 +365,11 @@ private:
 class ObjLoader : public geometry::ObjParserBase {
 public:
     ObjLoader()
-        : textureId_(0)
-    {}
+        : textureId_(0), vMap_(), tcMap_()
+    {
+        // make sure we have at least one valid material
+        useMaterial(0);
+    }
 
     vts::Mesh mesh() const { return mesh_; }
 
@@ -381,12 +377,13 @@ private:
     typedef std::vector<int> VertexMap;
     typedef std::vector<VertexMap> VertexMaps;
 
-    void addVertex(const Vector3d &v) {
+    virtual void addVertex(const Vector3d &v) {
         vertices_.emplace_back(v.x, v.y, v.z);
     }
 
-    void addTexture(const Vector3d &t) {
-        tc_.emplace_back(t.x, t.y);
+    virtual void addTexture(const Vector3d &t) {
+        // NB: flip Y coordinate
+        tc_.emplace_back(t.x, 1. - t.y);
     }
 
     template <typename VertexType>
@@ -395,7 +392,6 @@ private:
                  , std::vector<VertexType> &out
                  , VertexMap &vmap)
     {
-
         for (int i(0); i < 3; ++i) {
             const std::size_t src(f[i]);
             // ensure space
@@ -407,35 +403,40 @@ private:
                 dst = out.size();
                 out.push_back(vertices[src]);
             }
-            face[i] = dst;
+            face(i) = dst;
         }
     }
 
-    void addFacet(const Facet &f) {
+    virtual void addFacet(const Facet &f) {
         auto &sm(mesh_.submeshes[textureId_]);
-
         sm.faces.emplace_back();
-        addFace(f.v, sm.faces.back(), vertices_, sm.vertices
-                , vMaps_[textureId_]);
+        addFace(f.v, sm.faces.back(), vertices_, sm.vertices, *vMap_);
 
         sm.facesTc.emplace_back();
-        addFace(f.t, sm.facesTc.back(), tc_, sm.tc, tcMaps_[textureId_]);
+        addFace(f.t, sm.facesTc.back(), tc_, sm.tc, *tcMap_);
     }
 
-    void useMaterial(const std::string &m) {
+    virtual void useMaterial(const std::string &m) {
         // get new material index
-        textureId_ = boost::lexical_cast<unsigned int>(m);
+        useMaterial(boost::lexical_cast<unsigned int>(m));
+    }
+
+    void useMaterial(unsigned int textureId) {
+        textureId_ = textureId;
 
         // ensure space in all lists
         if (mesh_.submeshes.size() <= textureId_) {
             mesh_.submeshes.resize(textureId_ + 1);
             vMaps_.resize(textureId_ + 1);
             tcMaps_.resize(textureId_ + 1);
+
+            vMap_ = &vMaps_[textureId_];
+            tcMap_ = &tcMaps_[textureId_];
         }
     }
 
-    void addNormal(const Vector3d&) { /*ignored*/ }
-    void materialLibrary(const std::string&) { /*ignored*/ }
+    virtual void addNormal(const Vector3d&) { /*ignored*/ }
+    virtual void materialLibrary(const std::string&) { /*ignored*/ }
 
     math::Points3 vertices_;
     math::Points2 tc_;
@@ -444,6 +445,9 @@ private:
 
     vts::Mesh mesh_;
     unsigned int textureId_;
+
+    VertexMap *vMap_;
+    VertexMap *tcMap_;
 };
 
 class Cutter {
@@ -486,6 +490,12 @@ void Cutter::windowCut(const vef::Window &window)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
 
+    if (loader.mesh().submeshes.size() != window.atlas.size()) {
+        LOGTHROW(err2, std::runtime_error)
+            << "Texture/submesh count mismatch in window "
+            << window.path << ".";
+    }
+
     std::vector<cv::Mat> textures;
     for (const auto &texture : window.atlas) {
         LOG(info3) << "Loading window texture from: " << texture.path;
@@ -496,7 +506,7 @@ void Cutter::windowCut(const vef::Window &window)
         }
     }
 
-    const auto &mesh(loader.mesh());
+    const auto &inMesh(loader.mesh());
 
     // process all RF nodes
     for (const auto &item : rf_.division.nodes) {
@@ -506,12 +516,38 @@ void Cutter::windowCut(const vef::Window &window)
         // try to convert mesh into node's SRS
         const vts::CsConvertor conv(inputSrs_, node.srs);
 
-        for (const auto &sm : mesh.submeshes) {
-            math::Points3d vertices;
-            vertices.reserve(sm.vertices.size());
-            for (const auto &v : sm.vertices) {
-                vertices.push_back(conv(v));
+        // clone mesh
+        auto mesh(inMesh);
+        std::vector<vts::VertexMask> masks;
+
+        for (auto &sm : mesh.submeshes) {
+            masks.emplace_back(sm.vertices.size(), true);
+            auto &valid(masks.back());
+            auto ivalid(valid.begin());
+            for (auto &v : sm.vertices) {
+                try {
+                    v = conv(v);
+                    ++ivalid;
+                } catch (std::exception) {
+                    // failed to convert vertex, mask it
+                    *ivalid++ = false;
+                }
             }
+
+            // calculate area (only valid faces)
+            auto a(area(mesh, masks));
+
+            // denormalize texture area
+            double textureArea(.0);
+            auto iasm(a.submeshes.begin());
+            for (const auto &texture : window.atlas) {
+                const auto &as(*iasm++);
+                textureArea +=
+                    (as.internalTexture * math::area(texture.size));
+            }
+
+            const double texelSize(std::sqrt(a.mesh / textureArea));
+            LOG(info4) << "<" << node.srs << "> texelSize: " << texelSize;
         }
     }
 }
