@@ -64,6 +64,7 @@ struct Config {
     std::string referenceFrame;
     vs::CreditIds credits;
     int textureQuality;
+    math::Size2 optimalTextureSize;
 
     bool forceWatertight;
     boost::optional<vts::LodTileRange> tileExtents;
@@ -71,7 +72,8 @@ struct Config {
     double borderClipMargin;
 
     Config()
-        : textureQuality(85), forceWatertight(false)
+        : textureQuality(85), optimalTextureSize(256, 256)
+        , forceWatertight(false)
         , clipMargin(1.0 / 128.), borderClipMargin(1.0 / 128.)
     {}
 
@@ -157,8 +159,14 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "the output.")
 
         ("borderClipMargin", po::value(&config_.borderClipMargin)
+         ->default_value(config_.borderClipMargin)->required()
          , "Margin (in fraction of tile dimensions) added to tile extents "
          "where tile touches artificial border definied by tileExtents.")
+
+        ("tweak.optimalTextureSize", po::value(&config_.optimalTextureSize)
+         ->default_value(config_.optimalTextureSize)->required()
+         , "Size of ideal tile texture. Used to calculate fitting LOD from"
+         "mesh texel size. Do not modify.");
         ;
 
     pd.add("input", 1);
@@ -453,9 +461,9 @@ private:
 class Cutter {
 public:
     Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
-           , const vr::ReferenceFrame &rf)
+           , const vr::ReferenceFrame &rf, const Config &config)
         : tmpset_(tmpset), manifest_(manifest), rf_(rf)
-        , inputSrs_(*manifest_.srs)
+        , inputSrs_(*manifest_.srs), config_(config)
     {
         cut();
     }
@@ -468,6 +476,7 @@ private:
     const vef::Manifest &manifest_;
     const vr::ReferenceFrame &rf_;
     const geo::SrsDefinition &inputSrs_;
+    const Config &config_;
 };
 
 void Cutter::cut()
@@ -506,49 +515,77 @@ void Cutter::windowCut(const vef::Window &window)
         }
     }
 
+    // get input mesh
     const auto &inMesh(loader.mesh());
 
-    // process all RF nodes
+    // clone it to enhanced mesh
+    vts::EnhancedSubMesh::list mesh;
+    vts::VertexMasks masks;
+    mesh.reserve(inMesh.submeshes.size());
+    masks.reserve(inMesh.submeshes.size());
+    for (const auto &inSm : inMesh.submeshes) {
+        // clone submesh
+        mesh.emplace_back(inSm, vts::EnhancedSubMesh::AllocateProjected{});
+        // allocate space for mask
+        masks.emplace_back();
+    }
+
+    // process all real RF nodes
     for (const auto &item : rf_.division.nodes) {
         const auto &node(item.second);
-        if (!node.valid()) { continue; }
+        if (!node.real()) { continue; }
 
         // try to convert mesh into node's SRS
         const vts::CsConvertor conv(inputSrs_, node.srs);
 
-        // clone mesh
-        auto mesh(inMesh);
-        std::vector<vts::VertexMask> masks;
+        auto imasks(masks.begin());
+        for (auto &esm : mesh) {
+            // project mesh to srs and create mask (full by default)
 
-        for (auto &sm : mesh.submeshes) {
-            masks.emplace_back(sm.vertices.size(), true);
-            auto &valid(masks.back());
+            auto &sm(esm.mesh);
+
+            // make all faces valid by default
+            auto &valid(*imasks++);
+            valid.assign(esm.projected.size(), true);
+
             auto ivalid(valid.begin());
-            for (auto &v : sm.vertices) {
+            auto iprojected(esm.projected.begin());
+            for (const auto &v : sm.vertices) {
                 try {
-                    v = conv(v);
+                    *iprojected++ = conv(v);
                     ++ivalid;
                 } catch (std::exception) {
-                    // failed to convert vertex, mask it
+                    // failed to convert vertex, mask it and skip
+                    ++iprojected;
                     *ivalid++ = false;
                 }
             }
-
-            // calculate area (only valid faces)
-            auto a(area(mesh, masks));
-
-            // denormalize texture area
-            double textureArea(.0);
-            auto iasm(a.submeshes.begin());
-            for (const auto &texture : window.atlas) {
-                const auto &as(*iasm++);
-                textureArea +=
-                    (as.internalTexture * math::area(texture.size));
-            }
-
-            const double texelSize(std::sqrt(a.mesh / textureArea));
-            LOG(info4) << "<" << node.srs << "> texelSize: " << texelSize;
         }
+
+        // calculate area (only valid faces)
+        auto a(area(mesh, masks));
+
+        // denormalize texture area
+        double textureArea(.0);
+        auto iasm(a.submeshes.begin());
+        for (const auto &texture : window.atlas) {
+            const auto &as(*iasm++);
+            textureArea +=
+                (as.internalTexture * math::area(texture.size));
+        }
+
+        const double texelArea(a.mesh / textureArea);
+        const auto optimalTileArea
+            (area(config_.optimalTextureSize) * texelArea);
+        const auto bestLod
+            (0.5 * std::log2(node.extents.area() / optimalTileArea));
+
+        if (bestLod < 0) { continue; }
+
+        vts::Lod lod(std::round(bestLod) + node.id.lod);
+
+        LOG(info4) << "<" << node.srs << "> texelArea: " << texelArea
+                   << ", best lod: " << bestLod << ", lod: " << lod;
     }
 }
 
@@ -568,7 +605,7 @@ public:
         , inputSrs_(*input.manifest().srs)
         , tmpset_(path / "tmp")
     {
-        Cutter(tmpset_, input.manifest(), referenceFrame());
+        Cutter(tmpset_, input.manifest(), referenceFrame(), config_);
         setConstraints(Constraints().setValidTree(srcInfo_.validTree()));
         setEstimatedTileCount(srcInfo_.size());
     }
