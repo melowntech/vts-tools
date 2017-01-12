@@ -67,22 +67,13 @@ struct Config {
     math::Size2 optimalTextureSize;
 
     bool forceWatertight;
-    boost::optional<vts::LodTileRange> tileExtents;
-    double clipMargin;
-    double borderClipMargin;
+    int clipMargin;
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , forceWatertight(false)
-        , clipMargin(1.0 / 128.), borderClipMargin(1.0 / 128.)
+        , clipMargin(1.0 / 128.)
     {}
-
-    double maxClipMargin() const {
-        // no tile extents: use only clip margin
-        if (!tileExtents) { return clipMargin; }
-        // use maximum of clipe extents and border clip extents
-        return std::max(clipMargin, borderClipMargin);
-    }
 };
 
 class Vef2Vts : public service::Cmdline
@@ -158,11 +149,6 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "When set, only tiles in that range and below are added to "
          "the output.")
 
-        ("borderClipMargin", po::value(&config_.borderClipMargin)
-         ->default_value(config_.borderClipMargin)->required()
-         , "Margin (in fraction of tile dimensions) added to tile extents "
-         "where tile touches artificial border definied by tileExtents.")
-
         ("tweak.optimalTextureSize", po::value(&config_.optimalTextureSize)
          ->default_value(config_.optimalTextureSize)->required()
          , "Size of ideal tile texture. Used to calculate fitting LOD from"
@@ -203,10 +189,6 @@ void Vef2Vts::configure(const po::variables_map &vars)
     if ((config_.textureQuality < 0) || (config_.textureQuality > 100)) {
         throw po::validation_error
             (po::validation_error::invalid_option_value, "textureQuality");
-    }
-
-    if (vars.count("tileExtents")) {
-        config_.tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
     }
 }
 
@@ -339,37 +321,6 @@ math::Points2 projectCorners(const vr::ReferenceFrame::Division::Node &node
     return dst;
 }
 
-class SourceInfoBuilder : boost::noncopyable {
-public:
-    SourceInfoBuilder(const vef::VadstenaArchive &archive
-                      , const vr::ReferenceFrame &rf
-                      , double margin)
-        : srcSrs_(*archive.manifest().srs)
-    {
-        (void) archive;
-        (void) rf;
-        (void) margin;
-    }
-
-    const vts::TileIndex* validTree() const { return &validTree_; }
-
-    const vts::TileId::list& source(const vts::TileId &tileId) const {
-        auto fsourceInfo(sourceInfo_.find(tileId));
-        if (fsourceInfo == sourceInfo_.end()) { return emptySource_; }
-        return fsourceInfo->second;
-    }
-
-    std::size_t size() const { return sourceInfo_.size(); }
-
-private:
-    const geo::SrsDefinition srcSrs_;
-    SourceInfo sourceInfo_;
-    vts::TileIndex dstTi_;
-    vts::TileIndex validTree_;
-
-    static const vts::TileId::list emptySource_;
-};
-
 class ObjLoader : public geometry::ObjParserBase {
 public:
     ObjLoader()
@@ -458,6 +409,8 @@ private:
     VertexMap *tcMap_;
 };
 
+typedef std::vector<cv::Mat> Textures;
+
 class Cutter {
 public:
     Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
@@ -471,6 +424,11 @@ public:
 private:
     void cut();
     void windowCut(const vef::Window &window);
+    void splitToTiles(const vts::NodeInfo &root
+                      , vts::Lod lod, const vts::TileRange &tr
+                      , const vts::Mesh &mesh, const Textures &textures);
+    void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+                 , const Textures &textures);
 
     tools::TmpTileset &tmpset_;
     const vef::Manifest &manifest_;
@@ -489,6 +447,33 @@ void Cutter::cut()
     }
 }
 
+/** Dummy convertor. We work with mesh in local coordinates only.
+ */
+class DummyMeshVertexConvertor : public vts::MeshVertexConvertor {
+public:
+    virtual math::Point3d vertex(const math::Point3d &v) const { return v; }
+    virtual math::Point2d etc(const math::Point3d&) const { return {}; }
+    virtual math::Point2d etc(const math::Point2d&) const { return {}; }
+};
+
+vts::TileRange computeTileRange(const vts::RFNode &node, vts::Lod localLod
+                                , const vts::Mesh &mesh)
+{
+    vts::TileRange r(math::InvalidExtents{});
+    const auto ts(vts::tileSize(node.extents, localLod));
+    const auto origin(math::ul(node.extents));
+
+    for (const auto &sm : mesh.submeshes) {
+        for (const auto &p : sm.vertices) {
+            update(r, vts::TileRange::point_type
+                   ((p(0) - origin(0)) / ts.width
+                    , (origin(1) - p(1)) / ts.height));
+        }
+    }
+
+    return r;
+}
+
 void Cutter::windowCut(const vef::Window &window)
 {
     // load mesh
@@ -505,11 +490,11 @@ void Cutter::windowCut(const vef::Window &window)
             << window.path << ".";
     }
 
-    std::vector<cv::Mat> textures;
+    std::vector<cv::Mat> inTextures;
     for (const auto &texture : window.atlas) {
         LOG(info3) << "Loading window texture from: " << texture.path;
-        textures.push_back(cv::imread(texture.path.string()));
-        if (!textures.back().data) {
+        inTextures.push_back(cv::imread(texture.path.string()));
+        if (!inTextures.back().data) {
             LOGTHROW(err2, std::runtime_error)
                 << "Unable to load texture from " << texture.path << ".";
         }
@@ -518,52 +503,59 @@ void Cutter::windowCut(const vef::Window &window)
     // get input mesh
     const auto &inMesh(loader.mesh());
 
-    // clone it to enhanced mesh
-    vts::EnhancedSubMesh::list mesh;
-    vts::VertexMasks masks;
-    mesh.reserve(inMesh.submeshes.size());
-    masks.reserve(inMesh.submeshes.size());
-    for (const auto &inSm : inMesh.submeshes) {
-        // clone submesh
-        mesh.emplace_back(inSm, vts::EnhancedSubMesh::AllocateProjected{});
-        // allocate space for mask
-        masks.emplace_back();
-    }
-
     // process all real RF nodes
-    for (const auto &item : rf_.division.nodes) {
-        const auto &node(item.second);
-        if (!node.real()) { continue; }
+    for (const auto &node : vts::NodeInfo::nodes(rf_)) {
+        const auto &nodeId(node.nodeId());
 
         // try to convert mesh into node's SRS
-        const vts::CsConvertor conv(inputSrs_, node.srs);
+        const vts::CsConvertor conv(inputSrs_, node.srs());
 
-        auto imasks(masks.begin());
-        for (auto &esm : mesh) {
+        // local mesh and textures
+        vts::Mesh mesh;
+        std::vector<cv::Mat> textures;
+        mesh.submeshes.reserve(inMesh.submeshes.size());
+        textures.reserve(inTextures.size());
+
+        auto iinTextures(inTextures.begin());
+        for (const auto &sm : inMesh) {
+            auto &inTexture(*iinTextures++);
+
             // project mesh to srs and create mask (full by default)
 
-            auto &sm(esm.mesh);
-
             // make all faces valid by default
-            auto &valid(*imasks++);
-            valid.assign(esm.projected.size(), true);
+            vts::VertexMask valid(sm.vertices.size(), true);
+            math::Points3 projected;
+            projected.reserve(sm.vertices.size());
 
             auto ivalid(valid.begin());
-            auto iprojected(esm.projected.begin());
             for (const auto &v : sm.vertices) {
                 try {
-                    *iprojected++ = conv(v);
+                    projected.push_back(conv(v));
                     ++ivalid;
                 } catch (std::exception) {
                     // failed to convert vertex, mask it and skip
-                    ++iprojected;
+                    projected.emplace_back();
                     *ivalid++ = false;
                 }
             }
+
+            // clip mesh to node's extents
+            // FIXME: implement mask application in clipping!
+            auto osm(vts::clip(sm, projected, node.extents(), valid));
+            if (osm.faces.empty()) { continue; }
+
+            // at least one face survived, remember
+            mesh.submeshes.push_back(std::move(osm));
+            textures.push_back(inTexture);
+        }
+
+        if (mesh.submeshes.empty()) {
+            // nothing left in the mesh, skip this node
+            continue;
         }
 
         // calculate area (only valid faces)
-        auto a(area(mesh, masks));
+        const auto a(area(mesh));
 
         // denormalize texture area
         double textureArea(.0);
@@ -578,19 +570,72 @@ void Cutter::windowCut(const vef::Window &window)
         const auto optimalTileArea
             (area(config_.optimalTextureSize) * texelArea);
         const auto bestLod
-            (0.5 * std::log2(node.extents.area() / optimalTileArea));
+            (0.5 * std::log2(node.extents().area() / optimalTileArea));
 
         if (bestLod < 0) { continue; }
 
-        vts::Lod lod(std::round(bestLod) + node.id.lod);
+        // calculate local and global lod (round to closest)
+        const vts::Lod localLod(std::round(bestLod));
+        const vts::Lod lod(localLod + nodeId.lod);
 
-        LOG(info4) << "<" << node.srs << "> texelArea: " << texelArea
-                   << ", best lod: " << bestLod << ", lod: " << lod;
+        // compute mesh (local) tilerange at computed (local) lod
+        auto tr(computeTileRange(node.node(), localLod, mesh));
+        if (empty(tr)) { continue; }
+
+        // convert local tilerange to global tilerange
+        {
+            const auto origin(vts::lowestChild(vts::point(nodeId), localLod));
+            tr.ll += origin;
+            tr.ur += origin;
+        }
+
+        /** FIXME: proper way compute valid tile range is to subtract all tile
+         * ranges of rf. nodes below this node and process only what is left.
+         *
+         * For now, just check tr.ll.
+         *
+         * TODO: check for validity inside parent extents, e.g. inside polar
+         * caps in melown2015.
+         */
+
+        if (vts::NodeInfo(rf_, vts::tileId(lod, tr.ll)).subtree().root().id
+                          != nodeId)
+        {
+            // oops, some other subtree is down there
+            continue;
+        }
+
+        // we have some mesh that fits here
+        LOG(info3) << "<" << node.srs() << "> texelArea: " << texelArea
+                   << ", best lod: " << bestLod << ", lod: " << lod
+                   << ", tr: " << tr;
+
+        splitToTiles(node, lod, tr, mesh, textures);
     }
 }
 
-// keep empty, used as placeholder!
-const vts::TileId::list SourceInfoBuilder::emptySource_;
+void Cutter::splitToTiles(const vts::NodeInfo &root
+                          , vts::Lod lod, const vts::TileRange &tr
+                          , const vts::Mesh &mesh, const Textures &textures)
+{
+    typedef vts::TileRange::value_type Index;
+    for (Index j = tr.ll(1), je = tr.ur(1); j <= je; ++j) {
+        for (Index i = tr.ll(0), ie = tr.ur(0); i <= ie; ++i) {
+            vts::TileId tileId(lod, i, j);
+            const auto node(root.child(tileId));
+            cutTile(node, mesh, textures);
+        }
+    }
+}
+
+void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+                     , const Textures &textures)
+{
+    (void) node;
+    (void) mesh;
+    (void) textures;
+    LOG(info4) << "Cutting tile " << node.nodeId();
+}
 
 class Encoder : public vts::Encoder {
 public:
@@ -601,13 +646,10 @@ public:
             , const Config &config)
         : vts::Encoder(path, properties, mode)
         , config_(config), input_(input)
-        , srcInfo_(input_, referenceFrame(), config.maxClipMargin())
         , inputSrs_(*input.manifest().srs)
         , tmpset_(path / "tmp")
     {
         Cutter(tmpset_, input.manifest(), referenceFrame(), config_);
-        setConstraints(Constraints().setValidTree(srcInfo_.validTree()));
-        setEstimatedTileCount(srcInfo_.size());
     }
 
 private:
@@ -623,8 +665,6 @@ private:
     const Config config_;
 
     const vef::VadstenaArchive &input_;
-
-    SourceInfoBuilder srcInfo_;
 
     const geo::SrsDefinition inputSrs_;
 
@@ -697,125 +737,9 @@ Encoder::TileResult
 Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                   , const TileResult&)
 {
-    vts::BorderCondition borderCondition;
-
-    if (config_.tileExtents) {
-        borderCondition = vts::inside(*config_.tileExtents, tileId);
-        if (!borderCondition) {
-            // outside of range
-            return TileResult::Result::noDataYet;
-        }
-    }
-
-    const auto &src(srcInfo_.source(tileId));
-    if (src.empty()) {
-        return TileResult::Result::noDataYet;
-    }
-
-    LOG(info1) << "Source tiles(" << src.size() << "): "
-               << utility::join(src, ", ") << ".";
-
-    vts::MeshOpInput::list source;
-#if 0
-    {
-        vts::MeshOpInput::Id id(0);
-        for (const auto &srcId : src) {
-            UTILITY_OMP(critical)
-            {
-                // build input for tile transformation:
-                //     * node info is generated on the fly
-                //     * this cannot be a lazy operation
-                vts::MeshOpInput t(id++, input_, srcId, nullptr, false);
-                if (t) { source.push_back(t); }
-            }
-        }
-    }
-#endif
-
-    // CS convertors
-    // src physical -> dst SDS
-    const vts::CsConvertor srcPhy2Sds(inputSrs_, nodeInfo.srs());
-
-    // dst SDS -> dst physical
-    const vts::CsConvertor sds2DstPhy
-        (nodeInfo.srs(), referenceFrame().model.physicalSrs);
-
-    auto clipExtents(vts::inflateTileExtents
-                     (nodeInfo.extents(), config_.clipMargin
-                      , borderCondition, config_.borderClipMargin));
-
-    // output
-    Encoder::TileResult result;
-    auto &tile(result.tile());
-    vts::Mesh &mesh
-        (*(tile.mesh = std::make_shared<vts::Mesh>(config_.forceWatertight)));
-    vts::RawAtlas::pointer patlas([&]() -> vts::RawAtlas::pointer
-    {
-        auto atlas(std::make_shared<vts::RawAtlas>());
-        tile.atlas = atlas;
-        return atlas;
-    }());
-    auto &atlas(*patlas);
-
-    for (const auto &input : source) {
-        const auto &inMesh(input.mesh());
-        for (std::size_t smIndex(0), esmIndex(inMesh.size());
-             smIndex != esmIndex; ++smIndex)
-        {
-            auto sm(inMesh[smIndex]);
-
-            auto mask(warpInPlaceWithMask(srcPhy2Sds, sm));
-
-            // clip submesh
-            auto dstSm(vts::clip(sm, clipExtents, mask));
-
-            if (!dstSm.empty()) {
-                // re-generate external tx coordinates (if division node allows)
-                generateEtc(dstSm, nodeInfo.extents()
-                            , nodeInfo.node().externalTexture);
-
-                // update mesh coverage mask
-                if (!config_.forceWatertight) {
-                    updateCoverage(mesh, dstSm, nodeInfo.extents());
-                }
-
-                // convert mesh to destination physical SRS
-                warpInPlace(sds2DstPhy, dstSm);
-
-                // add mesh
-                mesh.add(dstSm);
-
-                // copy texture if submesh has atlas
-                if (input.hasAtlas() && input.atlas().valid(smIndex)) {
-                    atlas.add(input.atlas().get(smIndex));
-                }
-
-                // update credits
-                const auto &credits(input.node().credits());
-                tile.credits.insert(credits.begin(), credits.end());
-            }
-        }
-    }
-
-    if (mesh.empty()) {
-        // no mesh
-        // decrement number of estimated tiles
-        updateEstimatedTileCount(-1);
-        // tell that there is nothing yet
-        return TileResult::Result::noDataYet;
-    }
-
-    // merge submeshes if allowed
-    std::tie(tile.mesh, tile.atlas)
-        = mergeSubmeshes(tileId, tile.mesh, patlas, config_.textureQuality);
-
-    if (atlas.empty()) {
-        // no atlas -> disable
-        tile.atlas.reset();
-    }
-
-    // done:
-    return result;
+    return TileResult::Result::noData;
+    (void) tileId;
+    (void) nodeInfo;
 }
 
 void Encoder::finish(vts::TileSet &ts)
