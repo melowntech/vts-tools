@@ -204,24 +204,6 @@ usage
     return false;
 }
 
-double bestTileArea(const math::Points2 &corners)
-{
-    return (vts::triangleArea(corners[0], corners[1], corners[2])
-            + vts::triangleArea(corners[2], corners[3], corners[0]));
-}
-
-int bestLod(const vr::ReferenceFrame::Division::Node &node, double area)
-{
-    // compute longest of base node tile sizes
-    auto rootSize(math::size(node.extents));
-    auto rootArea(rootSize.width * rootSize.height);
-
-    // compute number of requested tiles per edge
-    auto tileCount(std::sqrt(rootArea / area));
-
-    return int(std::round(std::log2(tileCount)));
-}
-
 vts::TileRange::point_type
 tiled(const math::Size2f &ts, const math::Point2 &origin
       , const math::Point2 &p)
@@ -463,7 +445,7 @@ vts::TileRange computeTileRange(const vts::RFNode &node, vts::Lod localLod
     const auto ts(vts::tileSize(node.extents, localLod));
     const auto origin(math::ul(node.extents));
 
-    for (const auto &sm : mesh.submeshes) {
+    for (const auto &sm : mesh) {
         for (const auto &p : sm.vertices) {
             update(r, vts::TileRange::point_type
                    ((p(0) - origin(0)) / ts.width
@@ -607,7 +589,8 @@ void Cutter::windowCut(const vef::Window &window)
 
         // we have some mesh that fits here
         LOG(info3) << "<" << node.srs() << "> texelArea: " << texelArea
-                   << ", best lod: " << bestLod << ", lod: " << lod
+                   << ", best lod: " << bestLod << " ("
+                   << localLod << ")" << ", lod: " << lod
                    << ", tr: " << tr;
 
         splitToTiles(node, lod, tr, mesh, textures);
@@ -618,6 +601,7 @@ void Cutter::splitToTiles(const vts::NodeInfo &root
                           , vts::Lod lod, const vts::TileRange &tr
                           , const vts::Mesh &mesh, const Textures &textures)
 {
+    LOG(info3) << "Splitting to tiles in " << lod << "/" << tr << ".";
     typedef vts::TileRange::value_type Index;
     for (Index j = tr.ll(1), je = tr.ur(1); j <= je; ++j) {
         for (Index i = tr.ll(0), ie = tr.ur(0); i <= ie; ++i) {
@@ -631,10 +615,22 @@ void Cutter::splitToTiles(const vts::NodeInfo &root
 void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
                      , const Textures &textures)
 {
-    (void) node;
-    (void) mesh;
-    (void) textures;
-    LOG(info4) << "Cutting tile " << node.nodeId();
+    const auto extents(vts::inflateTileExtents
+                       (node.extents(), config_.clipMargin));
+    vts::Mesh clipped;
+    Textures clippedTextures;
+
+    auto itextures(textures.begin());
+    for (const auto &sm : mesh) {
+        const auto &texture(*itextures++);
+
+        auto m(vts::clip(sm, extents));
+        if (m.empty()) { continue; }
+        clipped.submeshes.push_back(std::move(m));
+        clippedTextures.push_back(texture);
+    }
+
+    // TODO: pack mesh atlas and store mesh inside temporaty dataset
 }
 
 class Encoder : public vts::Encoder {
