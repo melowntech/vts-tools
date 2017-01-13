@@ -13,7 +13,7 @@
 
 #include "vts-libs/vts.hpp"
 #include "vts-libs/vts/mesh.hpp"
-#include "vts-libs/vts/opencv/atlas.hpp"
+#include "vts-libs/vts/atlas.hpp"
 
 namespace vadstena { namespace vts { namespace tools {
 
@@ -23,7 +23,7 @@ public:
     ~TmpTileset();
 
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
-               , const vts::opencv::Atlas &atlas);
+               , const Atlas::pointer &atlas);
 
     void flush();
 

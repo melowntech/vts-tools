@@ -42,6 +42,7 @@
 #include "vts-libs/vts/meshop.hpp"
 #include "vts-libs/vts/heightmap.hpp"
 #include "vts-libs/vts/math.hpp"
+#include "vts-libs/vts/opencv/atlas.hpp"
 
 #include "vef/vef.hpp"
 
@@ -328,8 +329,6 @@ vts::TileRange computeTileRange(const vts::RFNode &node, vts::Lod localLod
     return r;
 }
 
-typedef std::vector<cv::Mat> Textures;
-
 struct Assignment {
     vts::NodeInfo node;
     double bestLod;
@@ -397,9 +396,10 @@ private:
 
     void splitToTiles(const vts::NodeInfo &root
                       , vts::Lod lod, const vts::TileRange &tr
-                      , const vts::Mesh &mesh, const Textures &textures);
+                      , const vts::Mesh &mesh
+                      , const vts::opencv::Atlas &atlas);
     void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
-                 , const Textures &textures);
+                 , const vts::opencv::Atlas &atlas);
 
     tools::TmpTileset &tmpset_;
     const vef::Manifest &manifest_;
@@ -531,7 +531,6 @@ Assignment::map Cutter::assign(const vef::Window &window)
 
         // local mesh and textures
         vts::Mesh mesh;
-        std::vector<cv::Mat> textures;
         mesh.submeshes.reserve(inMesh.submeshes.size());
 
         for (const auto &sm : inMesh) {
@@ -618,14 +617,16 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
             << window.path << ".";
     }
 
-    std::vector<cv::Mat> inTextures;
+    vts::opencv::Atlas inAtlas;
     for (const auto &texture : window.atlas) {
         LOG(info3) << "Loading window texture from: " << texture.path;
-        inTextures.push_back(cv::imread(texture.path.string()));
-        if (!inTextures.back().data) {
+        auto tex(cv::imread(texture.path.string()));
+        if (!tex.data) {
             LOGTHROW(err2, std::runtime_error)
                 << "Unable to load texture from " << texture.path << ".";
         }
+
+        inAtlas.add(tex);
     }
 
     // get input mesh
@@ -652,12 +653,12 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
 
         // local mesh and textures
         vts::Mesh mesh;
-        std::vector<cv::Mat> textures;
+        vts::opencv::Atlas atlas;
         mesh.submeshes.reserve(inMesh.submeshes.size());
 
-        auto iinTextures(inTextures.begin());
+        std::size_t smIndex(0);
         for (const auto &sm : inMesh) {
-            const auto &texture(*iinTextures++);
+            const auto &texture(inAtlas.get(smIndex++));
             // project mesh to srs and create mask (full by default)
 
             // make all faces valid by default
@@ -684,7 +685,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
 
             // at least one face survived, remember
             mesh.submeshes.push_back(std::move(osm));
-            textures.push_back(texture);
+            atlas.add(texture);
         }
 
         if (mesh.submeshes.empty()) {
@@ -704,13 +705,14 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
             tr.ur += origin;
         }
 
-        splitToTiles(node, lod, tr, mesh, textures);
+        splitToTiles(node, lod, tr, mesh, atlas);
     }
 }
 
 void Cutter::splitToTiles(const vts::NodeInfo &root
                           , vts::Lod lod, const vts::TileRange &tr
-                          , const vts::Mesh &mesh, const Textures &textures)
+                          , const vts::Mesh &mesh
+                          , const vts::opencv::Atlas &atlas)
 {
     LOG(info3) << "Splitting to tiles in " << lod << "/" << tr << ".";
     typedef vts::TileRange::value_type Index;
@@ -721,35 +723,35 @@ void Cutter::splitToTiles(const vts::NodeInfo &root
         for (Index i = tr.ll(0); i <= ie; ++i) {
             vts::TileId tileId(lod, i, j);
             const auto node(root.child(tileId));
-            cutTile(node, mesh, textures);
+            cutTile(node, mesh, atlas);
         }
     }
 }
 
 void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
-                     , const Textures &textures)
+                     , const vts::opencv::Atlas &atlas)
 {
     const auto extents(vts::inflateTileExtents
                        (node.extents(), config_.clipMargin));
     vts::Mesh clipped;
-    Textures clippedTextures;
+    vts::opencv::HybridAtlas clippedAtlas;
 
-    auto itextures(textures.begin());
+    std::size_t smIndex(0);
     for (const auto &sm : mesh) {
-        const auto &texture(*itextures++);
+        const auto &texture(atlas.get(smIndex++));
 
         auto m(vts::clip(sm, extents));
         if (m.empty()) { continue; }
+
         clipped.submeshes.push_back(std::move(m));
-        clippedTextures.push_back(texture);
+        clippedAtlas.add(texture);
     }
 
-    // TODO: pack mesh atlas and store mesh inside temporaty dataset
-    // NB: atlas uses PNG (quality=0)
-    vts::opencv::Atlas atlas(0);
+    if (clipped.empty()) { return; }
 
     // store in temporary storage
-    tmpset_.store(node.nodeId(), mesh, atlas);
+    const auto tileId(node.nodeId());
+    tmpset_.store(tileId, clipped, vts::repack(tileId, mesh, clippedAtlas, 0));
 }
 
 class Encoder : public vts::Encoder {

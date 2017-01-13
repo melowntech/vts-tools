@@ -52,9 +52,17 @@ TmpTileset::~TmpTileset()
     fs::remove_all(root_);
 }
 
-void TmpTileset::store(const vts::TileId &tileId, const vts::Mesh &mesh
-                       , const vts::opencv::Atlas &atlas)
+void TmpTileset::store(const TileId &tileId, const Mesh &mesh
+                       , const Atlas::pointer &atlas)
 {
+    LOG(debug)
+        << tileId << " Storing mesh with "
+        << std::accumulate(mesh.begin(), mesh.end(), std::size_t(0)
+                           , [](std::size_t v, const SubMesh &sm) {
+                               return v + sm.faces.size();
+                           })
+        << " faces.";
+
     // get driver for tile
     auto driver([&]() -> vts::Driver::pointer
     {
@@ -90,7 +98,7 @@ void TmpTileset::store(const vts::TileId &tileId, const vts::Mesh &mesh
     {
         std::unique_lock<std::mutex> lock(mutex_);
         auto os(driver->output(tileId, storage::TileFile::atlas));
-        atlas.serialize(os->get());
+        atlas->serialize(os->get());
         os->close();
     }
 }
