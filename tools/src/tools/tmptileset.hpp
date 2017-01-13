@@ -12,6 +12,7 @@
 #include <boost/filesystem/path.hpp>
 
 #include "vts-libs/vts.hpp"
+#include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 
 namespace vadstena { namespace vts { namespace tools {
@@ -20,7 +21,10 @@ class TmpTileset {
 public:
     TmpTileset(const boost::filesystem::path &root);
 
-    void store(const vts::Mesh &mesh, const vts::opencv::Atlas &atlas);
+    void store(const vts::TileId &tileId, const vts::Mesh &mesh
+               , const vts::opencv::Atlas &atlas);
+
+    void flush();
 
 private:
     class Slice;
