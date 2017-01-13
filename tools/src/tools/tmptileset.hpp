@@ -20,6 +20,7 @@ namespace vadstena { namespace vts { namespace tools {
 class TmpTileset {
 public:
     TmpTileset(const boost::filesystem::path &root);
+    ~TmpTileset();
 
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
                , const vts::opencv::Atlas &atlas);

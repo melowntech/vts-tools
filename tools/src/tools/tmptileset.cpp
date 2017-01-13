@@ -46,6 +46,12 @@ TmpTileset::TmpTileset(const boost::filesystem::path &root)
     fs::create_directories(root_);
 }
 
+TmpTileset::~TmpTileset()
+{
+    // cleanup
+    fs::remove_all(root_);
+}
+
 void TmpTileset::store(const vts::TileId &tileId, const vts::Mesh &mesh
                        , const vts::opencv::Atlas &atlas)
 {

@@ -392,7 +392,7 @@ private:
     void cut();
     Assignment::map assign(const vef::Window &window);
     void analyze(std::vector<Assignment::map> &assignments);
-    void windowCut(const vef::Window &window
+    void windowCut(const vef::Window &window, vts::Lod lodDiff
                    , const Assignment::map &assignemnts);
 
     void splitToTiles(const vts::NodeInfo &root
@@ -439,9 +439,6 @@ void Cutter::analyze(std::vector<Assignment::map> &assignments)
             auto fassignment(assignment.find(node.nodeId()));
             if (fassignment == assignment.end()) { continue; }
             nodeAssignments.push_back(&fassignment->second);
-            LOG(info4)
-                << std::fixed
-                << "    " << nodeAssignments.back()->bestLod;
         }
 
         while (!nodeAssignments.empty()) {
@@ -450,11 +447,6 @@ void Cutter::analyze(std::vector<Assignment::map> &assignments)
 
             const double diffLimit(config_.sigmaEditCoef * stddev);
             vts::Lod lod(std::round(meanLod));
-
-            LOG(info4)
-                << std::fixed
-                << "statistics: meanLod=" << meanLod << ", stddev=" << stddev
-                << ", diffLimit=" << diffLimit;
 
             for (auto inodeAssignments(nodeAssignments.begin());
                  inodeAssignments != nodeAssignments.end(); )
@@ -503,7 +495,7 @@ void Cutter::cut()
 
             std::size_t loddedWindowSize(loddedWindow.lods.size());
             for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
-                windowCut(loddedWindow.lods[ii], assignment);
+                windowCut(loddedWindow.lods[ii], ii, assignment);
             }
         }
 }
@@ -609,7 +601,7 @@ Assignment::map Cutter::assign(const vef::Window &window)
     return assignment;
 }
 
-void Cutter::windowCut(const vef::Window &window
+void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
                        , const Assignment::map &assignemnts)
 {
     // load mesh
@@ -640,11 +632,20 @@ void Cutter::windowCut(const vef::Window &window
     const auto &inMesh(loader.mesh());
 
     for (const auto &item : assignemnts) {
-        const auto &assignemnt(item.second);
-        if (!assignemnt.lod) { continue; }
-        const auto lod(*assignemnt.lod);
+        const auto &assignment(item.second);
+        if (!assignment.lod) { continue; }
+        // grab lod
+        auto lod(*assignment.lod);
+        // check for underflow
+        if (lodDiff > lod) { continue; }
+        // fix lod
+        lod -= lodDiff;
 
-        const auto &node(assignemnt.node);
+        const auto &node(assignment.node);
+        const auto &nodeId(node.nodeId());
+
+        // out of this node, abandon
+        if (lod < nodeId.lod) { continue; }
 
         // try to convert mesh into node's SRS
         const vts::CsConvertor conv(inputSrs_, node.srs());
@@ -691,7 +692,6 @@ void Cutter::windowCut(const vef::Window &window
             continue;
         }
 
-        const auto &nodeId(node.nodeId());
         const vts::Lod localLod(lod - nodeId.lod);
 
         // compute local tile range
