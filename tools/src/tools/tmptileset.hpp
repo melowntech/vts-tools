@@ -12,8 +12,9 @@
 #include <boost/filesystem/path.hpp>
 
 #include "vts-libs/vts.hpp"
+#include "vts-libs/vts/types.hpp"
 #include "vts-libs/vts/mesh.hpp"
-#include "vts-libs/vts/atlas.hpp"
+#include "vts-libs/vts/opencv/atlas.hpp"
 
 namespace vadstena { namespace vts { namespace tools {
 
@@ -23,9 +24,18 @@ public:
     ~TmpTileset();
 
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
-               , const Atlas::pointer &atlas);
+               , const Atlas &atlas);
 
+    std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
+    load(const vts::TileId &tileId);
+
+    /** Flushes data to disk.
+     */
     void flush();
+
+    /** Returns dataset tileindex (union of all tileindices).
+     */
+    TileIndex tileIndex() const;
 
 private:
     class Slice;

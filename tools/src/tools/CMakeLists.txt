@@ -31,6 +31,7 @@ define_module(BINARY vef2vts
 set(vef2vts_SOURCES
   vef2vts.cpp
   tmptileset.hpp tmptileset.cpp
+  repackatlas.hpp repackatlas.cpp
   )
 
 add_executable(vef2vts ${vef2vts_SOURCES})

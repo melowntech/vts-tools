@@ -4,6 +4,7 @@
 #include "dbglog/dbglog.hpp"
 
 #include "vts-libs/vts/tileset/driver.hpp"
+#include "vts-libs/vts/opencv/atlas.hpp"
 
 #include "./tmptileset.hpp"
 
@@ -16,25 +17,28 @@ public:
     typedef std::shared_ptr<Slice> pointer;
 
     Slice(const fs::path &root)
-        : driver_(vts::Driver::create
-                  (root, vts::driver::PlainOptions(5), {}))
+        : driver_(Driver::create(root, driver::PlainOptions(5), {}))
     {}
 
-    bool hasTile(const vts::TileId &tileId) const {
+    bool hasTile(const TileId &tileId) const {
         return index_.get(tileId);
     }
 
-    void setTile(const vts::TileId &tileId) {
+    void setTile(const TileId &tileId) {
         index_.set(tileId, 1);
     }
 
-    vts::Driver::pointer driver() { return driver_; }
+    Driver::pointer driver() { return driver_; }
+
+    Driver::pointer driver() const { return driver_; }
+
+    const TileIndex& index() { return index_; }
 
     void flush() { driver_->flush(); }
 
 private:
-    vts::TileIndex index_;
-    vts::Driver::pointer driver_;
+    TileIndex index_;
+    Driver::pointer driver_;
 };
 
 TmpTileset::TmpTileset(const boost::filesystem::path &root)
@@ -49,11 +53,11 @@ TmpTileset::TmpTileset(const boost::filesystem::path &root)
 TmpTileset::~TmpTileset()
 {
     // cleanup
-    fs::remove_all(root_);
+    // fs::remove_all(root_);
 }
 
 void TmpTileset::store(const TileId &tileId, const Mesh &mesh
-                       , const Atlas::pointer &atlas)
+                       , const Atlas &atlas)
 {
     LOG(debug)
         << tileId << " Storing mesh with "
@@ -64,7 +68,7 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
         << " faces.";
 
     // get driver for tile
-    auto driver([&]() -> vts::Driver::pointer
+    auto driver([&]() -> Driver::pointer
     {
         std::unique_lock<std::mutex> lock(mutex_);
         for (auto &slice : slices_) {
@@ -98,9 +102,55 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
     {
         std::unique_lock<std::mutex> lock(mutex_);
         auto os(driver->output(tileId, storage::TileFile::atlas));
-        atlas->serialize(os->get());
+        atlas.serialize(os->get());
         os->close();
     }
+}
+
+std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
+TmpTileset::load(const vts::TileId &tileId)
+{
+    auto input([&](const Driver::pointer &driver, TileFile type)
+               -> IStream::pointer
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return driver->input(tileId, type);
+    });
+
+    std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer> tile;
+    auto &mesh(std::get<0>(tile));
+    auto &atlas(std::get<1>(tile));
+
+    for (const auto &slice : slices_) {
+        if (!slice->hasTile(tileId)) { continue; }
+
+        auto driver(slice->driver());
+
+        Mesh m;
+        loadMesh(input(driver, storage::TileFile::mesh));
+        LOG(info4) << "m: " << m.submeshes.size();
+
+        opencv::Atlas a;
+        {
+            auto is(input(driver, storage::TileFile::atlas));
+            a.deserialize(is->get(), is->name());
+        }
+
+        if (!mesh) {
+            mesh = std::make_shared<Mesh>(m);
+        } else {
+            mesh->submeshes.insert(mesh->submeshes.end(), m.submeshes.begin()
+                                   , m.submeshes.end());
+        }
+
+        if (!atlas) {
+            atlas = std::make_shared<opencv::HybridAtlas>(a);
+        } else {
+            atlas->append(a);
+        }
+    }
+
+    return tile;
 }
 
 void TmpTileset::flush()
@@ -109,6 +159,15 @@ void TmpTileset::flush()
     for (const auto &slice : slices_) {
         slice->flush();
     }
+}
+
+TileIndex TmpTileset::tileIndex() const
+{
+    TileIndex ti;
+    for (const auto &slice : slices_) {
+        ti = unite(ti, slice->index());
+    }
+    return ti;
 }
 
 } } } // namespace vadstena::vts::tools

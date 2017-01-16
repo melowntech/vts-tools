@@ -47,6 +47,7 @@
 #include "vef/vef.hpp"
 
 #include "./tmptileset.hpp"
+#include "./repackatlas.hpp"
 
 
 namespace po = boost::program_options;
@@ -310,6 +311,7 @@ math::Extents2 computeExtents(const vts::Mesh &mesh)
             update(extents, p(0), p(1));
         }
     }
+    LOG(info4) << std::fixed << "Extents: " << extents;
     return extents;
 }
 
@@ -562,7 +564,7 @@ Assignment::map Cutter::assign(const vef::Window &window)
             mesh.submeshes.push_back(std::move(osm));
         }
 
-        if (mesh.submeshes.empty()) {
+        if (mesh.empty()) {
             // nothing left in the mesh, skip this node
             continue;
         }
@@ -688,7 +690,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
             atlas.add(texture);
         }
 
-        if (mesh.submeshes.empty()) {
+        if (mesh.empty()) {
             // nothing left in the mesh, skip this node
             continue;
         }
@@ -734,7 +736,7 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     const auto extents(vts::inflateTileExtents
                        (node.extents(), config_.clipMargin));
     vts::Mesh clipped;
-    vts::opencv::HybridAtlas clippedAtlas;
+    vts::opencv::Atlas clippedAtlas(0);
 
     std::size_t smIndex(0);
     for (const auto &sm : mesh) {
@@ -751,7 +753,8 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
 
     // store in temporary storage
     const auto tileId(node.nodeId());
-    tmpset_.store(tileId, clipped, vts::repack(tileId, mesh, clippedAtlas, 0));
+    tools::repack(tileId, clipped, clippedAtlas);
+    tmpset_.store(tileId, clipped, clippedAtlas);
 }
 
 class Encoder : public vts::Encoder {
@@ -767,6 +770,14 @@ public:
         , tmpset_(path / "tmp")
     {
         Cutter(tmpset_, input.manifest(), referenceFrame(), config_);
+        validTree_ = index_ = tmpset_.tileIndex();
+
+        // make valid tree complete from root
+        validTree_.makeAvailable(vts::LodRange(0, validTree_.maxLod()));
+        validTree_.complete();
+
+        setConstraints(Constraints().setValidTree(&validTree_));
+        setEstimatedTileCount(index_.count());
     }
 
 private:
@@ -786,42 +797,9 @@ private:
     const geo::SrsDefinition inputSrs_;
 
     tools::TmpTileset tmpset_;
+    vts::TileIndex index_;
+    vts::TileIndex validTree_;
 };
-
-void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
-{
-    // just convert vertices
-    for (auto &v : sm.vertices) {
-        // convert vertex in-place
-        v = conv(v);
-    }
-}
-
-vts::VertexMask warpInPlaceWithMask(const vts::CsConvertor &conv
-                                    , vts::SubMesh &sm)
-{
-    vts::VertexMask mask(sm.vertices.size(), true);
-
-    std::size_t masked(0);
-    auto imask(mask.begin());
-    for (auto &v : sm.vertices) {
-        try {
-            // convert vertex in-place
-            v = conv(v);
-        } catch (std::exception) {
-            // cannot convert vertex -> mask out
-            *imask = false;
-            ++masked;
-        }
-        ++imask;
-    }
-
-    // nothing masked -> no mask
-    if (!masked) { return {}; }
-
-    // something masked
-    return mask;
-}
 
 math::Size2 navpaneSizeInPixels(const math::Size2 &sizeInTiles)
 {
@@ -854,8 +832,20 @@ Encoder::TileResult
 Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                   , const TileResult&)
 {
-    return TileResult::Result::noData;
-    (void) tileId;
+    if (!index_.get(tileId)) { return TileResult::Result::noDataYet; }
+
+    vts::Mesh::pointer mesh;
+    vts::opencv::HybridAtlas::pointer atlas;
+
+    std::tie(mesh, atlas) = tmpset_.load(tileId);
+
+    // TODO: repack
+    TileResult result(TileResult::Result::tile);
+    result.tile().mesh = mesh;
+    result.tile().atlas = atlas;
+
+    return result;
+
     (void) nodeInfo;
 }
 
