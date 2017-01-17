@@ -26,8 +26,14 @@ public:
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
                , const Atlas &atlas);
 
+    /** Load tile from temporary storage.
+     *
+     * \param tileId tile ID
+     * \param quality texture quality of loaded atlas
+     * \return tile's mesh and hybrid atlas as a tupple
+     */
     std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-    load(const vts::TileId &tileId);
+    load(const vts::TileId &tileId, int quality);
 
     /** Flushes data to disk.
      */

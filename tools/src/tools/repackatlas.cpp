@@ -121,7 +121,9 @@ struct Component {
     void copy(cv::Mat &tex, const cv::Mat &texture) const;
 
     imgproc::UVCoord adjustUV(const math::Point2 &p) const {
-        return imgproc::UVCoord(p(0) + rect.packX, p(1) + rect.packY);
+        imgproc::UVCoord c(p(0), p(1));
+        rect.adjustUV(c);
+        return c;
     }
 };
 
@@ -153,6 +155,7 @@ struct ComponentInfo {
     cv::Mat composeTexture(const math::Size2 &ts) const {
         const auto &texture(tx->texture());
         cv::Mat tex(ts.height, ts.width, texture.type());
+        tex = cv::Scalar(0, 0, 0);
         for (const auto &c : components) {
             c->copy(tex, texture);
         }
@@ -163,8 +166,7 @@ struct ComponentInfo {
         math::Points2d tc;
         auto itcMap(tcMap.begin());
         for (const auto &oldUv : tx->tc()) {
-            auto uv((*itcMap++)->adjustUV(oldUv));
-            tc.push_back(normalize(uv, ts));
+            tc.push_back(normalize((*itcMap++)->adjustUV(oldUv), ts));
         }
         return tc;
     }

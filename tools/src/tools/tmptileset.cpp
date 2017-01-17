@@ -53,7 +53,7 @@ TmpTileset::TmpTileset(const boost::filesystem::path &root)
 TmpTileset::~TmpTileset()
 {
     // cleanup
-    // fs::remove_all(root_);
+    fs::remove_all(root_);
 }
 
 void TmpTileset::store(const TileId &tileId, const Mesh &mesh
@@ -108,7 +108,7 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
 }
 
 std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-TmpTileset::load(const vts::TileId &tileId)
+TmpTileset::load(const vts::TileId &tileId, int quality)
 {
     auto input([&](const Driver::pointer &driver, TileFile type)
                -> IStream::pointer
@@ -126,11 +126,10 @@ TmpTileset::load(const vts::TileId &tileId)
 
         auto driver(slice->driver());
 
-        Mesh m;
-        loadMesh(input(driver, storage::TileFile::mesh));
-        LOG(info4) << "m: " << m.submeshes.size();
+        auto is(input(driver, storage::TileFile::mesh));
+        Mesh m(loadMesh(is->get(), is->name()));
 
-        opencv::Atlas a;
+        opencv::HybridAtlas a(quality);
         {
             auto is(input(driver, storage::TileFile::atlas));
             a.deserialize(is->get(), is->name());

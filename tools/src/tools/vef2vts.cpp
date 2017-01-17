@@ -235,8 +235,7 @@ private:
     }
 
     virtual void addTexture(const Vector3d &t) {
-        // NB: flip Y coordinate
-        tc_.emplace_back(t.x, 1. - t.y);
+        tc_.emplace_back(t.x, t.y);
     }
 
     template <typename VertexType>
@@ -247,7 +246,7 @@ private:
     {
         for (int i(0); i < 3; ++i) {
             const std::size_t src(f[i]);
-            // ensure space
+            // ensure space in map
             if (vmap.size() <= src) { vmap.resize(src + 1, -1); }
 
             auto &dst(vmap[src]);
@@ -311,7 +310,6 @@ math::Extents2 computeExtents(const vts::Mesh &mesh)
             update(extents, p(0), p(1));
         }
     }
-    LOG(info4) << std::fixed << "Extents: " << extents;
     return extents;
 }
 
@@ -736,7 +734,7 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     const auto extents(vts::inflateTileExtents
                        (node.extents(), config_.clipMargin));
     vts::Mesh clipped;
-    vts::opencv::Atlas clippedAtlas(0);
+    vts::opencv::Atlas clippedAtlas(0); // PNG!
 
     std::size_t smIndex(0);
     for (const auto &sm : mesh) {
@@ -810,6 +808,22 @@ math::Size2 navpaneSizeInPixels(const math::Size2 &sizeInTiles)
             , 1 + sizeInTiles.height * (s.height - 1) };
 }
 
+void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
+{
+    // just convert vertices
+    for (auto &v : sm.vertices) {
+        // convert vertex in-place
+        v = conv(v);
+    }
+}
+
+void warpInPlace(const vts::CsConvertor &conv, vts::Mesh &mesh)
+{
+    for (auto &sm : mesh) {
+        warpInPlace(conv, sm);
+    }
+}
+
 vts::NavTile::pointer
 warpNavtiles(const vts::TileId &tileId
              , const vr::ReferenceFrame &referenceFrame
@@ -834,15 +848,30 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 {
     if (!index_.get(tileId)) { return TileResult::Result::noDataYet; }
 
-    vts::Mesh::pointer mesh;
-    vts::opencv::HybridAtlas::pointer atlas;
+    // dst SDS -> dst physical
+    const vts::CsConvertor sds2DstPhy
+        (nodeInfo.srs(), referenceFrame().model.physicalSrs);
 
-    std::tie(mesh, atlas) = tmpset_.load(tileId);
-
-    // TODO: repack
     TileResult result(TileResult::Result::tile);
-    result.tile().mesh = mesh;
-    result.tile().atlas = atlas;
+
+    // create tile
+    auto &tile(result.tile());
+    {
+        // load tile
+        vts::Mesh::pointer mesh;
+        vts::opencv::HybridAtlas::pointer atlas;
+        std::tie(mesh, atlas) = tmpset_.load(tileId, config_.textureQuality);
+
+        // merge submeshes
+        std::tie(tile.mesh, tile.atlas)
+            = vts::mergeSubmeshes(tileId, mesh, atlas, config_.textureQuality);
+    }
+
+    // TODO: generate etc
+    // TODO: generate mesh mask
+
+    // warp mesh to physical SRS
+    warpInPlace(sds2DstPhy, *tile.mesh);
 
     return result;
 
@@ -852,7 +881,20 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 void Encoder::finish(vts::TileSet &ts)
 {
     (void) ts;
-    // TODO: update position and navtiles
+#if 0
+    vr::Position pos;
+
+    // FIXME: this works only for ENU
+    const vts::CsConvertor conv
+        (inputSrs_, referenceFrame().model.navigationSrs);
+    pos.position = conv(math::Point2(0, 0, 0));
+
+    // floating above ground
+    pos.heightMode = vr::Position::HeightMode::floating;
+    // verticalExtent = extents.
+
+    ts.setPosition(position);
+#endif
 }
 
 int Vef2Vts::run()
