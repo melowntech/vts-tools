@@ -771,8 +771,7 @@ public:
         validTree_ = index_ = tmpset_.tileIndex();
 
         // make valid tree complete from root
-        validTree_.makeAvailable(vts::LodRange(0, validTree_.maxLod()));
-        validTree_.complete();
+        validTree_.makeAbsolute().complete();
 
         setConstraints(Constraints().setValidTree(&validTree_));
         setEstimatedTileCount(index_.count());
@@ -867,7 +866,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             = vts::mergeSubmeshes(tileId, mesh, atlas, config_.textureQuality);
     }
 
-    // TODO: generate etc
+    // generate external texture coordinates
+    vts::generateEtc(*tile.mesh, nodeInfo.extents()
+                     , nodeInfo.node().externalTexture);
+
     // TODO: generate mesh mask
 
     // warp mesh to physical SRS
