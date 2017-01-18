@@ -68,6 +68,8 @@ struct Config {
     vs::CreditIds credits;
     int textureQuality;
     math::Size2 optimalTextureSize;
+    double ntLodPixelSize;
+    double dtmExtractionRadius;
 
     bool forceWatertight;
     int clipMargin;
@@ -75,8 +77,8 @@ struct Config {
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
-        , forceWatertight(false)
-        , clipMargin(1.0 / 128.)
+        , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
+        , forceWatertight(false), clipMargin(1.0 / 128.)
         , sigmaEditCoef(1.5)
     {}
 };
@@ -138,6 +140,18 @@ void Vef2Vts::configuration(po::options_description &cmdline
 
         ("credits", po::value<std::string>()
          , "Comma-separated list of string/numeric credit id.")
+
+        ("navtileLodPixelSize"
+         , po::value(&config_.ntLodPixelSize)
+         ->default_value(config_.ntLodPixelSize)->required()
+         , "Navigation data are generated at first LOD (starting from root) "
+         "where pixel size (in navigation grid) is less or "
+         "equal to this value.")
+
+        ("dtmExtraction.radius"
+         , po::value(&config_.dtmExtractionRadius)
+         ->default_value(config_.dtmExtractionRadius)->required()
+         , "Radius (in meters) of DTM extraction element (in meters).")
 
         ("force.watertight", po::value(&config_.forceWatertight)
          ->default_value(false)->implicit_value(true)
@@ -332,19 +346,21 @@ vts::TileRange computeTileRange(const vts::RFNode &node, vts::Lod localLod
 struct Assignment {
     vts::NodeInfo node;
     double bestLod;
+    std::size_t lodCount; // number of LODs (except the most detail one)
     math::Extents2 meshExtents;
 
-    boost::optional<vts::Lod> lod;
+    vts::LodRange lodRange;
 
-    Assignment(const vts::NodeInfo &node, double bestLod
+    Assignment(const vts::NodeInfo &node, double bestLod, std::size_t lodCount
                , const math::Extents2 &meshExtents)
-        : node(node), bestLod(bestLod), meshExtents(meshExtents)
+        : node(node), bestLod(bestLod), lodCount(lodCount)
+        , meshExtents(meshExtents), lodRange(vts::LodRange::emptyRange())
     {}
 
     void setLod(vts::Lod localLod) {
         const auto& nodeId(node.nodeId());
         auto tileRange(computeTileRange(node.node(), localLod, meshExtents));
-        auto lod = localLod + nodeId.lod;
+        const auto lod(localLod + nodeId.lod);
 
         // convert local tilerange to global tilerange
 
@@ -367,12 +383,31 @@ struct Assignment {
             return;
         }
 
+        // clip LOD count if larger than local LOD
+        if (lodCount > localLod) { lodCount = localLod; }
+
         // assign!
-        this->lod = lod;
+        lodRange.min = lod - lodCount;
+        lodRange.max = lod;
     }
 
     typedef std::map<vts::TileId, Assignment> map;
     typedef std::vector<Assignment*> plist;
+};
+
+struct NavtileInfo {
+    vts::LodRange lodRange;
+    double pixelSize;
+
+    NavtileInfo() : lodRange(vts::LodRange::emptyRange()), pixelSize() {}
+
+    NavtileInfo(const vts::LodRange &lodRange, double pixelSize)
+        : lodRange(lodRange), pixelSize(pixelSize)
+    {}
+
+    operator bool() const { return !lodRange.empty(); }
+
+    typedef std::map<const vts::RFNode*, NavtileInfo> map;
 };
 
 class Cutter {
@@ -387,9 +422,11 @@ public:
         tmpset_.flush();
     }
 
+    const NavtileInfo::map& ntMap() const { return ntMap_; }
+
 private:
     void cut();
-    Assignment::map assign(const vef::Window &window);
+    Assignment::map assign(const vef::Window &window, std::size_t lodCount);
     void analyze(std::vector<Assignment::map> &assignments);
     void windowCut(const vef::Window &window, vts::Lod lodDiff
                    , const Assignment::map &assignemnts);
@@ -407,6 +444,8 @@ private:
     const geo::SrsDefinition &inputSrs_;
     const Config &config_;
     const vts::NodeInfo::list nodes_;
+
+    NavtileInfo::map ntMap_;
 };
 
 std::pair<double, double>
@@ -431,6 +470,119 @@ statistics(const Assignment::plist &assignments)
     return res;
 }
 
+Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
+                                         , double sigmaEditCoef)
+{
+    Assignment::plist out;
+
+    while (!nodeAssignments.empty()) {
+        double meanLod, stddev;
+        std::tie(meanLod, stddev) = statistics(nodeAssignments);
+
+        const double diffLimit(sigmaEditCoef * stddev);
+        vts::Lod lod(std::round(meanLod));
+
+        for (auto inodeAssignments(nodeAssignments.begin());
+             inodeAssignments != nodeAssignments.end(); )
+        {
+            auto *assignment(*inodeAssignments);
+
+            // compute difference from mean best lod
+            const double diff(std::abs(assignment->bestLod - meanLod));
+
+            if (diff < diffLimit) {
+                // fits in range -> assign lod and remove from list
+                assignment->setLod(lod);
+                inodeAssignments = nodeAssignments.erase(inodeAssignments);
+                if (!assignment->lodRange.empty()) {
+                    out.push_back(assignment);
+                }
+            } else {
+                ++inodeAssignments;
+            }
+        }
+    }
+
+    return out;
+}
+
+NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
+                               , Assignment::plist nodeAssignments
+                               , const Config &config)
+{
+    // 1. compute lod range intersection and minimum lod
+    // 2. compute union of extents
+    vts::LodRange lr(nodeAssignments.front()->lodRange);
+    vts::Lod minLod(lr.min);
+
+    math::Extents2 extents(math::InvalidExtents{});
+    for (const auto &a : nodeAssignments) {
+        update(extents, a->meshExtents.ll);
+        update(extents, a->meshExtents.ur);
+
+        const auto &alr(a->lodRange);
+
+        minLod = std::min(minLod, a->lodRange.min);
+
+        if ((alr.max < lr.min) || (alr.min > lr.max)) {
+            // ops, no intersection
+            lr = vts::LodRange::emptyRange();
+            break;
+        }
+
+        // fix minimum
+        if (alr.min > lr.min) { lr.min = alr.min; }
+
+        // fix maximum
+        if (alr.max < lr.max) { lr.max = alr.max; }
+    }
+
+    if (lr.empty()) {
+        // OOPS, no common lod range...
+        return {};
+    }
+
+    // 3. find nt lod by nt lod pixelsize
+    const auto nodeId(node.nodeId());
+
+    // nt lod
+    vts::Lod ntLod(lr.max);
+
+    // sample one tile at bottom lod
+    const vts::NodeInfo n(node.child
+                          (vts::lowestChild(nodeId, ntLod  - nodeId.lod)));
+
+    // tile size at bottom lod
+    const auto ts(math::size(n.extents()));
+
+    // take center of extents
+    const auto ntCenter(math::center(extents));
+
+    // navtile size (in pixels)
+    auto ntSize(vts::NavTile::size());
+    ntSize.width -= 1;
+    ntSize.height -= 1;
+
+    // SRS factors at mesh center
+    const auto f(geo::SrsFactors(node.srsDef())(ntCenter));
+
+    // calculate pixel size from ration between tile area (in "beans") and
+    // navtile size in pixels; ration is down scaled by area of srs factors
+    // scales
+    auto pixelSize(std::sqrt
+                   (math::area(ts)
+                    / (math::area(ntSize)
+                       * f.meridionalScale * f.parallelScale)));
+
+    // find best matching lod
+    while ((ntLod > lr.min) && (pixelSize < config.ntLodPixelSize)) {
+        pixelSize *= 2.0;
+        --ntLod;
+    }
+
+    return NavtileInfo(vts::LodRange(lr.min, ntLod), pixelSize);
+}
+
 void Cutter::analyze(std::vector<Assignment::map> &assignments)
 {
     for (const auto &node : nodes_) {
@@ -441,29 +593,15 @@ void Cutter::analyze(std::vector<Assignment::map> &assignments)
             nodeAssignments.push_back(&fassignment->second);
         }
 
-        while (!nodeAssignments.empty()) {
-            double meanLod, stddev;
-            std::tie(meanLod, stddev) = statistics(nodeAssignments);
+        const auto analyzed
+            (analyzeNodeAssignments(nodeAssignments, config_.sigmaEditCoef));
 
-            const double diffLimit(config_.sigmaEditCoef * stddev);
-            vts::Lod lod(std::round(meanLod));
+        if (analyzed.empty()) { continue; }
 
-            for (auto inodeAssignments(nodeAssignments.begin());
-                 inodeAssignments != nodeAssignments.end(); )
-            {
-                auto *assignment(*inodeAssignments);
-
-                // compute difference from mean best lod
-                const double diff(std::abs(assignment->bestLod - meanLod));
-
-                if (diff < diffLimit) {
-                    // fits in range -> assign lod and remove from list
-                    assignment->setLod(lod);
-                    inodeAssignments = nodeAssignments.erase(inodeAssignments);
-                } else {
-                    ++inodeAssignments;
-                }
-            }
+        // create navtile info mapping for this node
+        if (const auto ni = computeNavtileInfo(node, analyzed, config_)) {
+            ntMap_.insert(NavtileInfo::map::value_type
+                          (&node.subtree().root(), ni));
         }
     }
 }
@@ -476,7 +614,9 @@ void Cutter::cut()
     UTILITY_OMP(parallel for)
     for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
         // calculate assignment
-        const auto assignment(assign(manifest_.windows[i].lods.front()));
+        const auto &loddedWindow(manifest_.windows[i]);
+        const auto assignment(assign(loddedWindow.lods.front()
+                                     , loddedWindow.lods.size() - 1));
         // store
         UTILITY_OMP(critical)
             assignments.push_back(assignment);
@@ -500,7 +640,7 @@ void Cutter::cut()
         }
 }
 
-Assignment::map Cutter::assign(const vef::Window &window)
+Assignment::map Cutter::assign(const vef::Window &window, std::size_t lodCount)
 {
     // load mesh
     ObjLoader loader;
@@ -593,7 +733,7 @@ Assignment::map Cutter::assign(const vef::Window &window)
             assignment.insert
             (Assignment::map::value_type
              (node.nodeId()
-              , Assignment(node, bestLod, computeExtents(mesh))));
+              , Assignment(node, bestLod, lodCount, computeExtents(mesh))));
     }
 
     // done
@@ -634,13 +774,17 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
 
     for (const auto &item : assignemnts) {
         const auto &assignment(item.second);
-        if (!assignment.lod) { continue; }
+
+        // compute current lod
+        if (assignment.lodRange.empty()) { continue; }
         // grab lod
-        auto lod(*assignment.lod);
-        // check for underflow
+        auto lod(assignment.lodRange.max);
+        // check for absolute underflow
         if (lodDiff > lod) { continue; }
         // fix lod
         lod -= lodDiff;
+        // check for underflow in given assignment
+        if (lod < assignment.lodRange.min) { continue; }
 
         const auto &node(assignment.node);
         const auto &nodeId(node.nodeId());
@@ -755,6 +899,17 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     tmpset_.store(tileId, clipped, clippedAtlas);
 }
 
+struct HmAccumulator {
+    NavtileInfo ntInfo;
+    vts::HeightMap::Accumulator hma;
+
+    HmAccumulator(const NavtileInfo &ntInfo)
+        : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
+    {}
+
+    typedef std::map<const vts::RFNode*, HmAccumulator> map;
+};
+
 class Encoder : public vts::Encoder {
 public:
     Encoder(const boost::filesystem::path &path
@@ -767,7 +922,13 @@ public:
         , inputSrs_(*input.manifest().srs)
         , tmpset_(path / "tmp")
     {
-        Cutter(tmpset_, input.manifest(), referenceFrame(), config_);
+        Cutter cutter(tmpset_, input.manifest(), referenceFrame(), config_);
+        for (const auto &item : cutter.ntMap()) {
+            accumulatorMap_.insert
+                (HmAccumulator::map::value_type
+                 (item.first, HmAccumulator(item.second)));
+        }
+
         validTree_ = index_ = tmpset_.tileIndex();
 
         // make valid tree complete from root
@@ -783,9 +944,11 @@ private:
              , const TileResult&)
         UTILITY_OVERRIDE;
 
-    void prepare(const vef::Manifest &manifest);
-
     virtual void finish(vts::TileSet &ts);
+
+    void rasterizeNavTile(const vts::TileId &tileId
+                          , const vts::NodeInfo &nodeInfo
+                          , const vts::Mesh &mesh);
 
     const Config config_;
 
@@ -796,6 +959,8 @@ private:
     tools::TmpTileset tmpset_;
     vts::TileIndex index_;
     vts::TileIndex validTree_;
+
+    HmAccumulator::map accumulatorMap_;
 };
 
 math::Size2 navpaneSizeInPixels(const math::Size2 &sizeInTiles)
@@ -823,23 +988,6 @@ void warpInPlace(const vts::CsConvertor &conv, vts::Mesh &mesh)
     }
 }
 
-vts::NavTile::pointer
-warpNavtiles(const vts::TileId &tileId
-             , const vr::ReferenceFrame &referenceFrame
-             , const vts::NodeInfo &nodeInfo
-             , const vts::MeshOpInput::list &source)
-{
-    // TODO: Check for different lodding/SDS and process accordingly
-
-    vts::HeightMap hm(tileId, source, referenceFrame);
-    if (hm.empty()) { return {}; }
-    hm.warp(nodeInfo);
-
-    auto navtile(hm.navtile(tileId));
-    if (navtile->coverageMask().empty()) { return {}; }
-
-    return navtile;
-}
 
 Encoder::TileResult
 Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
@@ -873,7 +1021,8 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     // generate mesh mask
     vts::generateCoverage(*tile.mesh, nodeInfo.extents());
 
-    // TODO: generate mesh mask
+    // rasterize navtile (only at defined lod)
+    rasterizeNavTile(tileId, nodeInfo, *tile.mesh);
 
     // warp mesh to physical SRS
     warpInPlace(sds2DstPhy, *tile.mesh);
@@ -883,23 +1032,126 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     (void) nodeInfo;
 }
 
+/** Constructs transformation matrix that maps everything in extents into a grid
+ *  of defined size so the grid (0, 0) matches to upper-left extents corner and
+ *  grid(gridSize.width - 1, gridSize.width - 1) matches lower-right extents
+ *  corner.
+ */
+inline math::Matrix4 mesh2grid(const math::Extents2 &extents
+                              , const math::Size2 &gridSize)
+{
+    math::Matrix4 trafo(ublas::identity_matrix<double>(4));
+
+    auto es(size(extents));
+
+    // scales
+    math::Size2f scale((gridSize.width - 1) / es.width
+                       , (gridSize.height - 1) / es.height);
+
+    // scale to grid
+    trafo(0, 0) = scale.width;
+    trafo(1, 1) = -scale.height;
+
+    // place zero to upper-left corner
+    trafo(0, 3) = -extents.ll(0) * scale.width;
+    trafo(1, 3) = extents.ur(1) * scale.height;
+
+    return trafo;
+}
+
+template <typename Op>
+void rasterizeMesh(const vts::Mesh &mesh, const math::Matrix4 &trafo
+                   , const math::Size2 &rasterSize, Op op)
+{
+    math::Points3 vertices;
+    std::vector<imgproc::Scanline> scanlines;
+    cv::Point3f tri[3];
+
+    for (const auto &sm : mesh) {
+        vertices.reserve(sm.vertices.size());
+        vertices.clear();
+        for (const auto &v : sm.vertices) {
+            vertices.push_back(transform(trafo, v));
+        }
+
+        for (const auto &face : sm.faces) {
+            for (int i(0); i < 3; ++i) {
+                const auto &p(vertices[face[i]]);
+                tri[i].x = p(0);
+                tri[i].y = p(1);
+                tri[i].z = p(2);
+            }
+
+            scanlines.clear();
+            imgproc::scanConvertTriangle(tri, 0, rasterSize.height, scanlines);
+
+            for (const auto &sl : scanlines) {
+                imgproc::processScanline(sl, 0, rasterSize.width, op);
+            }
+        }
+    }
+}
+
+void Encoder::rasterizeNavTile(const vts::TileId &tileId
+                               , const vts::NodeInfo &nodeInfo
+                               , const vts::Mesh &mesh)
+{
+    // grab accumulator
+    auto faccumulatorMap(accumulatorMap_.find(&nodeInfo.subtree().root()));
+    if (faccumulatorMap == accumulatorMap_.end()) { return; }
+    auto &hma(faccumulatorMap->second);
+    if (tileId.lod != hma.ntInfo.lodRange.max) { return; }
+
+    auto &hm([&]() -> cv::Mat&
+    {
+        cv::Mat *hm(nullptr);
+        UTILITY_OMP(critical(getnavtile))
+            hm = &hma.hma.tile(tileId);
+        return *hm;
+    }());
+
+    // invalid heightmap value (i.e. initial value) is +oo and we take minimum
+    // of all rasterized heights in given place
+    rasterizeMesh(mesh, mesh2grid(nodeInfo.extents(), hma.hma.tileSize())
+                  , hma.hma.tileSize(), [&](int x, int y, float z)
+    {
+        auto &value(hm.at<float>(y, x));
+        if (z < value) { value = z; }
+    });
+}
+
 void Encoder::finish(vts::TileSet &ts)
 {
-    (void) ts;
-#if 0
-    vr::Position pos;
+    for (auto &item : accumulatorMap_) {
+        auto &hma(item.second);
 
-    // FIXME: this works only for ENU
-    const vts::CsConvertor conv
-        (inputSrs_, referenceFrame().model.navigationSrs);
-    pos.position = conv(math::Point2(0, 0, 0));
+        vts::HeightMap hm
+            (std::move(hma.hma), referenceFrame()
+             , config_.dtmExtractionRadius / hma.ntInfo.pixelSize);
 
-    // floating above ground
-    pos.heightMode = vr::Position::HeightMode::floating;
-    // verticalExtent = extents.
+        // iterate in nt lod range backwards: iterate from start and invert
+        // forward lod into backward lod
+        for (auto lod(hma.ntInfo.lodRange.max); lod >= hma.ntInfo.lodRange.min
+                 ; --lod)
+        {
+            // resize heightmap for given lod
+            hm.resize(lod);
 
-    ts.setPosition(position);
-#endif
+            // generate and store navtiles
+            // FIXME: traverse only part covered by current node
+            traverse(ts.tileIndex(), lod
+                     , [&](const vts::TileId &tileId
+                           , vts::QTree::value_type mask)
+            {
+                // process only tiles with mesh
+                if (!(mask & vts::TileIndex::Flag::mesh)) { return; }
+
+                if (auto nt = hm.navtile(tileId)) {
+                    ts.setNavTile(tileId, *nt);
+                }
+            });
+        }
+    }
 }
 
 int Vef2Vts::run()
