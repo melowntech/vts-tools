@@ -1122,18 +1122,35 @@ void Encoder::rasterizeNavTile(const vts::TileId &tileId
 
 void Encoder::finish(vts::TileSet &ts)
 {
+    boost::optional<vts::HeightMap::BestPosition> bestPosition;
+    const auto &navigationSrs(referenceFrame().model.navigationSrs);
+
     for (auto &item : accumulatorMap_) {
+        const auto &rfnode(*item.first);
         auto &hma(item.second);
 
         vts::HeightMap hm
             (std::move(hma.hma), referenceFrame()
              , config_.dtmExtractionRadius / hma.ntInfo.pixelSize);
 
+        // use best position if better than previous
+        {
+            auto bp(hm.bestPosition());
+            if (!bestPosition
+                || (bp.verticalExtent > bestPosition->verticalExtent))
+            {
+                bp.location
+                    = vts::CsConvertor(rfnode.srs, navigationSrs)
+                    (bp.location);
+                bestPosition = bp;
+            }
+        }
+
+        const auto &lr(hma.ntInfo.lodRange);
+
         // iterate in nt lod range backwards: iterate from start and invert
         // forward lod into backward lod
-        for (auto lod(hma.ntInfo.lodRange.max); lod >= hma.ntInfo.lodRange.min
-                 ; --lod)
-        {
+        for (auto lod(lr.max); lod >= lr.min; --lod) {
             // resize heightmap for given lod
             hm.resize(lod);
 
@@ -1151,6 +1168,19 @@ void Encoder::finish(vts::TileSet &ts)
                 }
             });
         }
+    }
+
+    // use best position if available
+    if (bestPosition) {
+        vr::Position pos;
+        pos.position = bestPosition->location;
+
+        pos.type = vr::Position::Type::objective;
+        pos.heightMode = vr::Position::HeightMode::fixed;
+        pos.orientation = { 0.0, -90.0, 0.0 };
+        pos.verticalExtent = bestPosition->verticalExtent;
+        pos.verticalFov = 55;
+        ts.setPosition(pos);
     }
 }
 
