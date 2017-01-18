@@ -857,18 +857,21 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     auto &tile(result.tile());
     {
         // load tile
-        vts::Mesh::pointer mesh;
-        vts::opencv::HybridAtlas::pointer atlas;
-        std::tie(mesh, atlas) = tmpset_.load(tileId, config_.textureQuality);
+        const auto loaded(tmpset_.load(tileId, config_.textureQuality));
 
         // merge submeshes
         std::tie(tile.mesh, tile.atlas)
-            = vts::mergeSubmeshes(tileId, mesh, atlas, config_.textureQuality);
+            = vts::mergeSubmeshes
+            (tileId, std::get<0>(loaded), std::get<1>(loaded)
+             , config_.textureQuality);
     }
 
     // generate external texture coordinates
     vts::generateEtc(*tile.mesh, nodeInfo.extents()
                      , nodeInfo.node().externalTexture);
+
+    // generate mesh mask
+    vts::generateCoverage(*tile.mesh, nodeInfo.extents());
 
     // TODO: generate mesh mask
 
