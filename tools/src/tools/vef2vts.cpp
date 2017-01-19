@@ -5,6 +5,8 @@
 #include <iterator>
 
 #include <boost/algorithm/string/split.hpp>
+#include <boost/iostreams/filtering_stream.hpp>
+#include <boost/iostreams/filter/gzip.hpp>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -51,14 +53,15 @@
 
 
 namespace po = boost::program_options;
+namespace bio = boost::iostreams;
+namespace ba = boost::algorithm;
+namespace fs = boost::filesystem;
+namespace ublas = boost::numeric::ublas;
 namespace vs = vadstena::storage;
 namespace vr = vadstena::registry;
 namespace vts = vadstena::vts;
 namespace tools = vadstena::vts::tools;
 namespace vef = vadstena::vef;
-namespace ba = boost::algorithm;
-namespace fs = boost::filesystem;
-namespace ublas = boost::numeric::ublas;
 
 namespace {
 
@@ -326,6 +329,34 @@ private:
     VertexMap *vMap_;
     VertexMap *tcMap_;
 };
+
+bool loadGzippedObj(ObjLoader &loader, const fs::path &path)
+{
+    std::ifstream f(path.string());
+    if (!f.good()) { return false; }
+
+    bio::filtering_istream gzipped;
+    gzipped.push
+        (bio::gzip_decompressor(bio::gzip_params().window_bits, 1 << 16));
+    gzipped.push(f);
+
+    auto res(loader.parse(gzipped));
+    f.close();
+    return res;
+}
+
+bool loadObj(ObjLoader &loader, const vef::Window &window)
+{
+    switch (window.mesh.format) {
+    case vef::Mesh::Format::obj:
+        return loader.parse(window.mesh.path);
+
+    case vef::Mesh::Format::gzippedObj:
+        return loadGzippedObj(loader, window.mesh.path);
+    }
+    throw;
+}
+
 
 math::Extents2 computeExtents(const vts::Mesh &mesh)
 {
@@ -657,7 +688,7 @@ Assignment::map Cutter::assign(const vef::Window &window, std::size_t lodCount)
     ObjLoader loader;
 
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loader.parse(window.mesh.path)) {
+    if (!loadObj(loader, window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
@@ -757,7 +788,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
     // load mesh
     ObjLoader loader;
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loader.parse(window.mesh.path)) {
+    if (!loadObj(loader, window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
