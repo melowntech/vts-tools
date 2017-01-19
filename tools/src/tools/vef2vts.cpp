@@ -1054,9 +1054,11 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     // warp mesh to physical SRS
     warpInPlace(sds2DstPhy, *tile.mesh);
 
-    return result;
+    // set credits
+    tile.credits = config_.credits;
 
-    (void) nodeInfo;
+    // done
+    return result;
 }
 
 /** Constructs transformation matrix that maps everything in extents into a grid
