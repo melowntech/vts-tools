@@ -72,13 +72,16 @@ struct Config {
     double dtmExtractionRadius;
 
     bool forceWatertight;
-    int clipMargin;
+    boost::optional<vts::LodTileRange> tileExtents;
+    double clipMargin;
+    double borderClipMargin;
     double sigmaEditCoef;
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , forceWatertight(false), clipMargin(1.0 / 128.)
+        , borderClipMargin(clipMargin)
         , sigmaEditCoef(1.5)
     {}
 };
@@ -168,6 +171,10 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "When set, only tiles in that range and below are added to "
          "the output.")
 
+        ("borderClipMargin", po::value(&config_.borderClipMargin)
+         , "Margin (in fraction of tile dimensions) added to tile extents "
+         "where tile touches artificial border definied by tileExtents.")
+
         ("tweak.optimalTextureSize", po::value(&config_.optimalTextureSize)
          ->default_value(config_.optimalTextureSize)->required()
          , "Size of ideal tile texture. Used to calculate fitting LOD from"
@@ -214,6 +221,10 @@ void Vef2Vts::configure(const po::variables_map &vars)
     if ((config_.textureQuality < 0) || (config_.textureQuality > 100)) {
         throw po::validation_error
             (po::validation_error::invalid_option_value, "textureQuality");
+    }
+
+    if (vars.count("tileExtents")) {
+        config_.tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
     }
 }
 
@@ -875,8 +886,18 @@ void Cutter::splitToTiles(const vts::NodeInfo &root
 void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
                      , const vts::opencv::Atlas &atlas)
 {
+    // compute border condition (defaults to all available)
+    vts::BorderCondition borderCondition;
+    if (config_.tileExtents) {
+        borderCondition = vts::inside(*config_.tileExtents, node.nodeId());
+        if (!borderCondition) { return; }
+    }
+
+    // compute clip extents
     const auto extents(vts::inflateTileExtents
-                       (node.extents(), config_.clipMargin));
+                       (node.extents(), config_.clipMargin
+                        , borderCondition, config_.borderClipMargin));
+
     vts::Mesh clipped;
     vts::opencv::Atlas clippedAtlas(0); // PNG!
 
@@ -1022,8 +1043,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     vts::generateEtc(*tile.mesh, nodeInfo.extents()
                      , nodeInfo.node().externalTexture);
 
-    // generate mesh mask
-    vts::generateCoverage(*tile.mesh, nodeInfo.extents());
+    if (!config_.forceWatertight) {
+        // generate mesh mask if not asked to make all tiles watertight
+        vts::generateCoverage(*tile.mesh, nodeInfo.extents());
+    }
 
     // rasterize navtile (only at defined lod)
     rasterizeNavTile(tileId, nodeInfo, *tile.mesh);
