@@ -902,9 +902,12 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
 struct HmAccumulator {
     NavtileInfo ntInfo;
     vts::HeightMap::Accumulator hma;
+    vts::CsConvertor toNavSrs;
 
-    HmAccumulator(const NavtileInfo &ntInfo)
+    HmAccumulator(const vr::ReferenceFrame &rf, const vts::RFNode &node
+                  , const NavtileInfo &ntInfo)
         : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
+        , toNavSrs(node.srs, rf.model.navigationSrs)
     {}
 
     typedef std::map<const vts::RFNode*, HmAccumulator> map;
@@ -926,7 +929,8 @@ public:
         for (const auto &item : cutter.ntMap()) {
             accumulatorMap_.insert
                 (HmAccumulator::map::value_type
-                 (item.first, HmAccumulator(item.second)));
+                 (item.first, HmAccumulator
+                  (referenceFrame(), *item.first, item.second)));
         }
 
         validTree_ = index_ = tmpset_.tileIndex();
@@ -1060,7 +1064,8 @@ inline math::Matrix4 mesh2grid(const math::Extents2 &extents
 }
 
 template <typename Op>
-void rasterizeMesh(const vts::Mesh &mesh, const math::Matrix4 &trafo
+void rasterizeMesh(const vts::Mesh &mesh, const vts::CsConvertor &toNavSrs
+                   , const math::Matrix4 &trafo
                    , const math::Size2 &rasterSize, Op op)
 {
     math::Points3 vertices;
@@ -1070,7 +1075,8 @@ void rasterizeMesh(const vts::Mesh &mesh, const math::Matrix4 &trafo
     for (const auto &sm : mesh) {
         vertices.reserve(sm.vertices.size());
         vertices.clear();
-        for (const auto &v : sm.vertices) {
+        for (auto v : sm.vertices) {
+            v(2) = toNavSrs(v)(2);
             vertices.push_back(transform(trafo, v));
         }
 
@@ -1112,7 +1118,8 @@ void Encoder::rasterizeNavTile(const vts::TileId &tileId
 
     // invalid heightmap value (i.e. initial value) is +oo and we take minimum
     // of all rasterized heights in given place
-    rasterizeMesh(mesh, mesh2grid(nodeInfo.extents(), hma.hma.tileSize())
+    rasterizeMesh(mesh, hma.toNavSrs
+                  , mesh2grid(nodeInfo.extents(), hma.hma.tileSize())
                   , hma.hma.tileSize(), [&](int x, int y, float z)
     {
         auto &value(hm.at<float>(y, x));
