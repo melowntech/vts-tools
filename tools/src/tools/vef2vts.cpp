@@ -532,7 +532,7 @@ Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
             // compute difference from mean best lod
             const double diff(std::abs(assignment->bestLod - meanLod));
 
-            if (diff < diffLimit) {
+            if (diff <= diffLimit) {
                 // fits in range -> assign lod and remove from list
                 assignment->setLod(lod);
                 inodeAssignments = nodeAssignments.erase(inodeAssignments);

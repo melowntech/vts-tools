@@ -217,10 +217,35 @@ public:
 
     void flush() { driver_->flush(); }
 
+    void saveMesh(const TileId &tileId, const Mesh &mesh);
+    void saveAtlas(const TileId &tileId, const Atlas &atlas);
+
+    IStream::pointer input(const TileId &tileId, TileFile type) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return driver_->input(tileId, type);
+    }
+
 private:
+    std::mutex mutex_;
     TileIndex index_;
     Driver::pointer driver_;
 };
+
+void TmpTileset::Slice::saveMesh(const TileId &tileId, const Mesh &mesh)
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto os(driver_->output(tileId, storage::TileFile::mesh));
+    saveSimpleMesh(os->get(), mesh);
+    os->close();
+}
+
+void TmpTileset::Slice::saveAtlas(const TileId &tileId, const Atlas &atlas)
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto os(driver_->output(tileId, storage::TileFile::atlas));
+    atlas.serialize(os->get());
+    os->close();
+}
 
 TmpTileset::TmpTileset(const boost::filesystem::path &root)
     : root_(root)
@@ -249,14 +274,14 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
         << " faces.";
 
     // get driver for tile
-    auto driver([&]() -> Driver::pointer
+    auto slice([&]() -> Slice::pointer
     {
         std::unique_lock<std::mutex> lock(mutex_);
         for (auto &slice : slices_) {
             // TODO: make get/set in one pass
             if (!slice->hasTile(tileId)) {
                 slice->setTile(tileId);
-                return slice->driver();
+                return slice;
             }
         }
 
@@ -267,37 +292,16 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
         slices_.push_back(std::make_shared<Slice>(path));
         auto &slice(slices_.back());
         slice->setTile(tileId);
-        return slice->driver();
+        return slice;
     }());
 
-
-    // store mesh (under lock)
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        auto os(driver->output(tileId, storage::TileFile::mesh));
-        saveSimpleMesh(os->get(), mesh);
-        os->close();
-    }
-
-    // store atlas (under lock)
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        auto os(driver->output(tileId, storage::TileFile::atlas));
-        atlas.serialize(os->get());
-        os->close();
-    }
+    slice->saveMesh(tileId, mesh);
+    slice->saveAtlas(tileId, atlas);
 }
 
 std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
 TmpTileset::load(const vts::TileId &tileId, int quality)
 {
-    auto input([&](const Driver::pointer &driver, TileFile type)
-               -> IStream::pointer
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return driver->input(tileId, type);
-    });
-
     std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer> tile;
     auto &mesh(std::get<0>(tile));
     auto &atlas(std::get<1>(tile));
@@ -307,12 +311,12 @@ TmpTileset::load(const vts::TileId &tileId, int quality)
 
         auto driver(slice->driver());
 
-        auto is(input(driver, storage::TileFile::mesh));
+        auto is(slice->input(tileId, storage::TileFile::mesh));
         Mesh m(loadSimpleMesh(is->get(), is->name()));
 
         opencv::HybridAtlas a(quality);
         {
-            auto is(input(driver, storage::TileFile::atlas));
+            auto is(slice->input(tileId, storage::TileFile::atlas));
             a.deserialize(is->get(), is->name());
         }
 
