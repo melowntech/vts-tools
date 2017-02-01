@@ -41,5 +41,6 @@ buildsys_binary(vef2vts)
 
 # ------------------------------------------------------------------------
 # installation
-install(TARGETS  
-        RUNTIME DESTINATION bin COMPONENT main)
+
+install(TARGETS  vef2vts
+  RUNTIME DESTINATION bin COMPONENT vts-tools)

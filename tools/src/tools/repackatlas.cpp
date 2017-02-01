@@ -73,6 +73,10 @@ private:
 };
 
 namespace {
+
+typedef Face::value_type VertexIndex;
+typedef std::set<VertexIndex> VertexIndices;
+
 /** Continuous mesh component.
  */
 struct Component {
@@ -82,7 +86,7 @@ struct Component {
 
     /** Set of components's indices to texture coordinates
      */
-    std::set<int> indices;
+    VertexIndices indices;
 
     /** UV rectangle.
      */
