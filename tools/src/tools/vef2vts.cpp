@@ -112,8 +112,8 @@ private:
 
     virtual int run() UTILITY_OVERRIDE;
 
-    fs::path input_;
     fs::path output_;
+    std::vector<fs::path> input_;
 
     vts::CreateMode createMode_;
 
@@ -127,10 +127,10 @@ void Vef2Vts::configuration(po::options_description &cmdline
     vr::registryConfiguration(cmdline, vr::defaultPath());
 
     cmdline.add_options()
-        ("input", po::value(&input_)->required()
-         , "Path to input vadstena export format (VEF) archive.")
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
+        ("input", po::value(&input_)->required()
+         , "Path to input vadstena export format (VEF) archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("tilesetId", po::value(&config_.tilesetId)->required()
@@ -190,8 +190,9 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "round(mean best LOD).")
         ;
 
-    pd.add("input", 1);
-    pd.add("output", 1);
+    pd
+        .add("output", 1)
+        .add("input", -1);
 
     (void) config;
 }
@@ -435,6 +436,7 @@ struct Assignment {
 
     typedef std::map<vts::TileId, Assignment> map;
     typedef std::vector<Assignment*> plist;
+    typedef std::vector<map> maplist;
 };
 
 struct NavtileInfo {
@@ -450,44 +452,6 @@ struct NavtileInfo {
     operator bool() const { return !lodRange.empty(); }
 
     typedef std::map<const vts::RFNode*, NavtileInfo> map;
-};
-
-class Cutter {
-public:
-    Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
-           , const vr::ReferenceFrame &rf, const Config &config)
-        : tmpset_(tmpset), manifest_(manifest), rf_(rf)
-        , inputSrs_(*manifest_.srs), config_(config)
-        , nodes_(vts::NodeInfo::nodes(rf_))
-    {
-        cut();
-        tmpset_.flush();
-    }
-
-    const NavtileInfo::map& ntMap() const { return ntMap_; }
-
-private:
-    void cut();
-    Assignment::map assign(const vef::Window &window, std::size_t lodCount);
-    void analyze(std::vector<Assignment::map> &assignments);
-    void windowCut(const vef::Window &window, vts::Lod lodDiff
-                   , const Assignment::map &assignemnts);
-
-    void splitToTiles(const vts::NodeInfo &root
-                      , vts::Lod lod, const vts::TileRange &tr
-                      , const vts::Mesh &mesh
-                      , const vts::opencv::Atlas &atlas);
-    void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
-                 , const vts::opencv::Atlas &atlas);
-
-    tools::TmpTileset &tmpset_;
-    const vef::Manifest &manifest_;
-    const vr::ReferenceFrame &rf_;
-    const geo::SrsDefinition &inputSrs_;
-    const Config &config_;
-    const vts::NodeInfo::list nodes_;
-
-    NavtileInfo::map ntMap_;
 };
 
 std::pair<double, double>
@@ -625,7 +589,84 @@ NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
     return NavtileInfo(vts::LodRange(lr.min, ntLod), pixelSize);
 }
 
-void Cutter::analyze(std::vector<Assignment::map> &assignments)
+struct HmAccumulator {
+    NavtileInfo ntInfo;
+    vts::HeightMap::Accumulator hma;
+    vts::CsConvertor toNavSrs;
+
+    HmAccumulator(const vr::ReferenceFrame &rf, const vts::RFNode &node
+                  , const NavtileInfo &ntInfo)
+        : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
+        , toNavSrs(node.srs, rf.model.navigationSrs)
+    {}
+
+    typedef std::map<const vts::RFNode*, HmAccumulator> map;
+};
+
+class Analyzer {
+public:
+    Analyzer(const std::vector<vef::VadstenaArchive> &input
+             , const vr::ReferenceFrame &rf
+             , const Config &config
+             , HmAccumulator::map &accumulatorMap)
+        : rf_(rf), config_(config)
+        , nodes_(vts::NodeInfo::nodes(rf_))
+    {
+        Assignment::maplist assignments;
+        // process all input manifests
+        for (const auto &archive : input) {
+            const auto &manifest(archive.manifest());
+
+            std::size_t manifestWindowsSize(manifest.windows.size());
+            UTILITY_OMP(parallel for)
+                for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
+                    // calculate assignment
+                    const auto &loddedWindow(manifest.windows[i]);
+                    const auto assignment
+                        (assign(*manifest.srs
+                                , loddedWindow.lods.front()
+                                , loddedWindow.lods.size() - 1));
+                    // store
+                    UTILITY_OMP(critical(analyzer))
+                        assignments.push_back(assignment);
+                }
+        }
+
+        analyze(assignments);
+
+        // split assignments per input archive
+        auto iassignments(assignments.begin());
+        for (const auto &archive : input) {
+            auto size(archive.manifest().windows.size());
+            assignments_.emplace_back(iassignments, iassignments + size);
+            iassignments += size;
+        }
+
+        for (const auto &item : ntMap_) {
+            accumulatorMap.insert
+                (HmAccumulator::map::value_type
+                 (item.first, HmAccumulator(rf, *item.first, item.second)));
+        }
+    }
+
+    const std::vector<Assignment::maplist>& assignments() const {
+        return assignments_;
+    }
+
+private:
+    void analyze(Assignment::maplist &assignments);
+    Assignment::map assign(const geo::SrsDefinition &inputSrs
+                           , const vef::Window &window, std::size_t lodCount);
+
+    const vr::ReferenceFrame &rf_;
+    const Config &config_;
+
+    const vts::NodeInfo::list nodes_;
+    NavtileInfo::map ntMap_;
+    std::vector<Assignment::maplist> assignments_;
+};
+
+void Analyzer::analyze(Assignment::maplist &assignments)
 {
     for (const auto &node : nodes_) {
         Assignment::plist nodeAssignments;
@@ -648,41 +689,9 @@ void Cutter::analyze(std::vector<Assignment::map> &assignments)
     }
 }
 
-void Cutter::cut()
-{
-    std::vector<Assignment::map> assignments;
-
-    std::size_t manifestWindowsSize(manifest_.windows.size());
-    UTILITY_OMP(parallel for)
-    for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
-        // calculate assignment
-        const auto &loddedWindow(manifest_.windows[i]);
-        const auto assignment(assign(loddedWindow.lods.front()
-                                     , loddedWindow.lods.size() - 1));
-        // store
-        UTILITY_OMP(critical)
-            assignments.push_back(assignment);
-    }
-
-    analyze(assignments);
-
-    UTILITY_OMP(parallel for)
-        for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
-            const auto &loddedWindow(manifest_.windows[i]);
-            auto &assignment(assignments[i]);
-
-            dbglog::thread_id(loddedWindow.path.filename().string());
-
-            LOG(info3) << "Processing window LODs from: " << loddedWindow.path;
-
-            std::size_t loddedWindowSize(loddedWindow.lods.size());
-            for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
-                windowCut(loddedWindow.lods[ii], ii, assignment);
-            }
-        }
-}
-
-Assignment::map Cutter::assign(const vef::Window &window, std::size_t lodCount)
+Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
+                                 , const vef::Window &window
+                                 , std::size_t lodCount)
 {
     // load mesh
     ObjLoader loader;
@@ -709,7 +718,7 @@ Assignment::map Cutter::assign(const vef::Window &window, std::size_t lodCount)
         const auto &node(nodes_[i]);
 
         // try to convert mesh into node's SRS
-        const vts::CsConvertor conv(inputSrs_, node.srs());
+        const vts::CsConvertor conv(inputSrs, node.srs());
 
         // local mesh and textures
         vts::Mesh mesh;
@@ -780,6 +789,60 @@ Assignment::map Cutter::assign(const vef::Window &window, std::size_t lodCount)
 
     // done
     return assignment;
+}
+
+class Cutter {
+public:
+    Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
+           , const vr::ReferenceFrame &rf, const Config &config
+           , const Assignment::maplist &assignments)
+        : tmpset_(tmpset), manifest_(manifest), rf_(rf)
+        , inputSrs_(*manifest_.srs), config_(config)
+        , nodes_(vts::NodeInfo::nodes(rf_))
+    {
+        cut(assignments);
+    }
+
+private:
+    void cut(const Assignment::maplist &assignments);
+
+    void windowCut(const vef::Window &window, vts::Lod lodDiff
+                   , const Assignment::map &assignemnts);
+
+    void splitToTiles(const vts::NodeInfo &root
+                      , vts::Lod lod, const vts::TileRange &tr
+                      , const vts::Mesh &mesh
+                      , const vts::opencv::Atlas &atlas);
+    void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+                 , const vts::opencv::Atlas &atlas);
+
+    tools::TmpTileset &tmpset_;
+    const vef::Manifest &manifest_;
+    const vr::ReferenceFrame &rf_;
+    const geo::SrsDefinition &inputSrs_;
+    const Config &config_;
+    const vts::NodeInfo::list nodes_;
+
+    NavtileInfo::map ntMap_;
+};
+
+void Cutter::cut(const Assignment::maplist &assignments)
+{
+    std::size_t manifestWindowsSize(manifest_.windows.size());
+    UTILITY_OMP(parallel for)
+        for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
+            const auto &loddedWindow(manifest_.windows[i]);
+            auto &assignment(assignments[i]);
+
+            dbglog::thread_id(loddedWindow.path.filename().string());
+
+            LOG(info3) << "Processing window LODs from: " << loddedWindow.path;
+
+            std::size_t loddedWindowSize(loddedWindow.lods.size());
+            for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
+                windowCut(loddedWindow.lods[ii], ii, assignment);
+            }
+        }
 }
 
 void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
@@ -951,39 +1014,39 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     tmpset_.store(tileId, clipped, clippedAtlas);
 }
 
-struct HmAccumulator {
-    NavtileInfo ntInfo;
-    vts::HeightMap::Accumulator hma;
-    vts::CsConvertor toNavSrs;
+void cutTiles(const std::vector<vef::VadstenaArchive> &input
+              , tools::TmpTileset &tmpset
+              , const vr::ReferenceFrame &rf
+              , const Config config
+              , HmAccumulator::map &accumulatorMap)
+{
+    // analyze whole input
+    Analyzer analyzer(input, rf, config, accumulatorMap);
+    const auto &assignments(analyzer.assignments());
 
-    HmAccumulator(const vr::ReferenceFrame &rf, const vts::RFNode &node
-                  , const NavtileInfo &ntInfo)
-        : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
-        , toNavSrs(node.srs, rf.model.navigationSrs)
-    {}
+    // cut per archive
+    auto iassignments(assignments.begin());
+    for (const auto &archive : input) {
+        Cutter(tmpset, archive.manifest(), rf, config
+               , *iassignments++);
+    }
 
-    typedef std::map<const vts::RFNode*, HmAccumulator> map;
-};
+    tmpset.flush();
+}
 
 class Encoder : public vts::Encoder {
 public:
     Encoder(const boost::filesystem::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
-            , const vef::VadstenaArchive &input
+            , const std::vector<vef::VadstenaArchive> &input
             , const Config &config)
         : vts::Encoder(path, properties, mode)
-        , config_(config), input_(input)
-        , inputSrs_(*input.manifest().srs)
+        , config_(config)
         , tmpset_(path / "tmp")
     {
-        Cutter cutter(tmpset_, input.manifest(), referenceFrame(), config_);
-        for (const auto &item : cutter.ntMap()) {
-            accumulatorMap_.insert
-                (HmAccumulator::map::value_type
-                 (item.first, HmAccumulator
-                  (referenceFrame(), *item.first, item.second)));
-        }
+        cutTiles(input, tmpset_, referenceFrame(), config_
+                 , accumulatorMap_);
 
         validTree_ = index_ = tmpset_.tileIndex();
 
@@ -1007,10 +1070,6 @@ private:
                           , const vts::Mesh &mesh);
 
     const Config config_;
-
-    const vef::VadstenaArchive &input_;
-
-    const geo::SrsDefinition inputSrs_;
 
     tools::TmpTileset tmpset_;
     vts::TileIndex index_;
@@ -1253,12 +1312,16 @@ int Vef2Vts::run()
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
 
-    vef::VadstenaArchive input(input_);
-    if (!input.manifest().srs) {
-        LOG(fatal)
-            << "Vadstena export format archive " << input_
-            << " doesn't have assigned an SRS, cannot proceed.";
-        return EXIT_FAILURE;
+    // load input manifests
+    std::vector<vef::VadstenaArchive> input;
+    for (const auto &path : input_) {
+        input.emplace_back(path);
+        if (!input.back().manifest().srs) {
+            LOG(fatal)
+                << "Vadstena export format archive " << path
+                << " doesn't have assigned an SRS, cannot proceed.";
+            return EXIT_FAILURE;
+        }
     }
 
     // run the encoder
