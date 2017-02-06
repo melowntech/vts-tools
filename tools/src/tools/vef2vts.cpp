@@ -394,6 +394,8 @@ struct Assignment {
 
     vts::LodRange lodRange;
 
+    Assignment() = default;
+
     Assignment(const vts::NodeInfo &node, double bestLod, std::size_t lodCount
                , const math::Extents2 &meshExtents)
         : node(node), bestLod(bestLod), lodCount(lodCount)
@@ -618,6 +620,9 @@ public:
             const auto &manifest(archive.manifest());
 
             std::size_t manifestWindowsSize(manifest.windows.size());
+            auto assignmentsStart(assignments.size());
+            assignments.resize(assignmentsStart + manifestWindowsSize);
+
             UTILITY_OMP(parallel for)
                 for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
                     // calculate assignment
@@ -627,8 +632,7 @@ public:
                                 , loddedWindow.lods.front()
                                 , loddedWindow.lods.size() - 1));
                     // store
-                    UTILITY_OMP(critical(analyzer))
-                        assignments.push_back(assignment);
+                    assignments[assignmentsStart + i] = assignment;
                 }
         }
 
