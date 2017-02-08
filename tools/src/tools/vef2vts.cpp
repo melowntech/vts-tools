@@ -653,6 +653,11 @@ void load(const fs::path &path, const vr::ReferenceFrame &rf
              (node, HmAccumulator(rf, *node, ntInfo)));
     }
 
+    if (!f.eof()) {
+        LOGTHROW(err2, std::runtime_error)
+            << "Unable to load navtile info from " << path << ".";
+    }
+
     f.close();
 }
 
