@@ -20,6 +20,7 @@
 #include "utility/openmp.hpp"
 #include "utility/progress.hpp"
 #include "utility/openmp.hpp"
+#include "utility/limits.hpp"
 
 #include "service/cmdline.hpp"
 
@@ -1340,5 +1341,6 @@ int Vef2Vts::run()
 
 int main(int argc, char *argv[])
 {
+    utility::unlimitedCoredump();
     return Vef2Vts()(argc, argv);
 }
