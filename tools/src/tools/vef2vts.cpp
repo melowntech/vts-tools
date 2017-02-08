@@ -80,13 +80,14 @@ struct Config {
     double clipMargin;
     double borderClipMargin;
     double sigmaEditCoef;
+    bool resume;
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , forceWatertight(false), clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5)
+        , sigmaEditCoef(1.5), resume(false)
     {}
 };
 
@@ -189,6 +190,10 @@ void Vef2Vts::configuration(po::options_description &cmdline
          , "Sigma editting coefficient. Meshes with best LOD difference from "
          "mean best LOD lower than sigmaEditCoef * sigma are assigned "
          "round(mean best LOD).")
+
+        ("resume"
+         , "Resumes interrupted encoding. There must be complete (valid) "
+         "temporary tileset inside generated tileset. Use with caution.")
         ;
 
     pd
@@ -231,6 +236,8 @@ void Vef2Vts::configure(const po::variables_map &vars)
     if (vars.count("tileExtents")) {
         config_.tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
     }
+
+    config_.resume = vars.count("resume");
 }
 
 bool Vef2Vts::help(std::ostream &out, const std::string &what) const
@@ -605,6 +612,49 @@ struct HmAccumulator {
 
     typedef std::map<const vts::RFNode*, HmAccumulator> map;
 };
+
+void save(const fs::path &path, const HmAccumulator::map &map)
+{
+    utility::ofstreambuf f;
+    f.exceptions(std::ofstream::failbit | std::ofstream::badbit);
+    f.open(path.string(), std::ofstream::out | std::ofstream::trunc);
+
+    for (const auto &item : map) {
+        f << item.first->srs << " " << item.second.ntInfo.lodRange
+          << std::fixed << std::setprecision(9)
+          << " " << item.second.ntInfo.pixelSize << '\n';
+    }
+
+    f.close();
+}
+
+void load(const fs::path &path, const vr::ReferenceFrame &rf
+          , HmAccumulator::map &map)
+{
+    std::ifstream f(path.string());
+
+    std::string srs;
+    NavtileInfo ntInfo;
+    while (f >> srs >> ntInfo.lodRange >> ntInfo.pixelSize) {
+        const vts::RFNode *node(nullptr);
+        for (const auto &item : rf.division.nodes) {
+            if (item.second.srs == srs) {
+                node = &item.second;
+                break;
+            }
+        }
+        if (!node) {
+            LOGTHROW(err2, std::runtime_error)
+                << "Cannot find node by srs <" << srs << ">.";
+        }
+
+        map.insert
+            (HmAccumulator::map::value_type
+             (node, HmAccumulator(rf, *node, ntInfo)));
+    }
+
+    f.close();
+}
 
 class Analyzer {
 public:
@@ -1037,10 +1087,13 @@ void cutTiles(const std::vector<vef::VadstenaArchive> &input
     }
 
     tmpset.flush();
+    save(tmpset.root() / "navtile.info", accumulatorMap);
 }
 
 class Encoder : public vts::Encoder {
 public:
+    /** Regular version.
+     */
     Encoder(const boost::filesystem::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
@@ -1050,9 +1103,30 @@ public:
         , config_(config)
         , tmpset_(path / "tmp")
     {
+        // cut tiles to temporary
         cutTiles(input, tmpset_, referenceFrame(), config_
                  , accumulatorMap_);
 
+        prepare();
+    }
+
+    /** Resume version.
+     */
+    Encoder(const boost::filesystem::path &path
+            , const vts::TileSetProperties &properties
+            , vts::CreateMode mode
+            , const Config &config)
+        : vts::Encoder(path, properties, mode)
+        , config_(config)
+        , tmpset_(path / "tmp", false)
+    {
+        load(tmpset_.root() / "navtile.info", referenceFrame()
+             , accumulatorMap_);
+        prepare();
+    }
+
+private:
+    void prepare() {
         validTree_ = index_ = tmpset_.tileIndex();
 
         // make valid tree complete from root
@@ -1062,7 +1136,6 @@ public:
         setEstimatedTileCount(index_.count());
     }
 
-private:
     virtual TileResult
     generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
              , const TileResult&)
@@ -1316,6 +1389,15 @@ int Vef2Vts::run()
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
+
+    if (config_.resume) {
+        // run the encoder
+        Encoder(output_, properties, createMode_, config_).run();
+
+        // all done
+        LOG(info4) << "All done.";
+        return EXIT_SUCCESS;
+    }
 
     // load input manifests
     std::vector<vef::VadstenaArchive> input;

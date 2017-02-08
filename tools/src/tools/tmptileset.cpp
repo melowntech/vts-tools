@@ -4,11 +4,13 @@
 #include "dbglog/dbglog.hpp"
 
 #include "utility/binaryio.hpp"
+#include "utility/streams.hpp"
 
 #include "math/math.hpp"
 
 #include "vts-libs/vts/tileset/driver.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
+#include "vts-libs/vts/tileset/config.hpp"
 
 #include "./tmptileset.hpp"
 
@@ -196,10 +198,17 @@ Mesh loadSimpleMesh(std::istream &in, const fs::path &path)
 class TmpTileset::Slice {
 public:
     typedef std::shared_ptr<Slice> pointer;
+    struct OpenTag {};
 
     Slice(const fs::path &root)
         : driver_(Driver::create(root, driver::PlainOptions(5), {}))
     {}
+
+    Slice(const fs::path &root, const OpenTag&)
+        : driver_(Driver::open(root, Driver::BareConfigTag{}, {}))
+    {
+        index_.load(driver_->input(File::tileIndex)->get());
+    }
 
     bool hasTile(const TileId &tileId) const {
         return index_.get(tileId);
@@ -215,7 +224,19 @@ public:
 
     const TileIndex& index() { return index_; }
 
-    void flush() { driver_->flush(); }
+    void flush() {
+        {
+            auto f(driver_->output(File::tileIndex));
+            index_.save(f->get());
+            f->close();
+        }
+        {
+            auto f(driver_->output(File::config));
+            vts::tileset::saveDriver(f->get(), driver_->options());
+            f->close();
+        }
+        driver_->flush();
+    }
 
     void saveMesh(const TileId &tileId, const Mesh &mesh);
     void saveAtlas(const TileId &tileId, const Atlas &atlas);
@@ -247,13 +268,28 @@ void TmpTileset::Slice::saveAtlas(const TileId &tileId, const Atlas &atlas)
     os->close();
 }
 
-TmpTileset::TmpTileset(const boost::filesystem::path &root)
+TmpTileset::TmpTileset(const boost::filesystem::path &root
+                       , bool create)
     : root_(root)
 {
-    // make room for tilesets
-    fs::remove_all(root_);
-    // create root for tilesets
-    fs::create_directories(root_);
+    if (create) {
+        // make room for tilesets
+        fs::remove_all(root_);
+        // create root for tilesets
+        fs::create_directories(root_);
+        return;
+    }
+
+    for (int i(0);; ++i) {
+        auto path(root_ / boost::lexical_cast<std::string>(i));
+        if (!exists(path)) { break; }
+        slices_.push_back(std::make_shared<Slice>(path, Slice::OpenTag{}));
+    }
+
+    if (slices_.empty()) {
+        LOGTHROW(err1, std::runtime_error)
+            << "No tileset slice found in temporary tileset " << root_ << ".";
+    }
 }
 
 TmpTileset::~TmpTileset()

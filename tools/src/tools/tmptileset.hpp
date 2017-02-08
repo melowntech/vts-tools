@@ -20,7 +20,8 @@ namespace vadstena { namespace vts { namespace tools {
 
 class TmpTileset {
 public:
-    TmpTileset(const boost::filesystem::path &root);
+    TmpTileset(const boost::filesystem::path &root
+               , bool crete = true);
     ~TmpTileset();
 
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
@@ -42,6 +43,10 @@ public:
     /** Returns dataset tileindex (union of all tileindices).
      */
     TileIndex tileIndex() const;
+
+    /** Root directory.
+     */
+    const boost::filesystem::path root() const { return root_; }
 
 private:
     class Slice;
