@@ -1170,20 +1170,14 @@ math::Size2 navpaneSizeInPixels(const math::Size2 &sizeInTiles)
             , 1 + sizeInTiles.height * (s.height - 1) };
 }
 
-void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
+inline void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
 {
-    // just convert vertices
-    for (auto &v : sm.vertices) {
-        // convert vertex in-place
-        v = conv(v);
-    }
+    for (auto &v : sm.vertices) { v = conv(v); }
 }
 
-void warpInPlace(const vts::CsConvertor &conv, vts::Mesh &mesh)
+inline void warpInPlace(const vts::CsConvertor &conv, vts::Mesh &mesh)
 {
-    for (auto &sm : mesh) {
-        warpInPlace(conv, sm);
-    }
+    for (auto &sm : mesh) { warpInPlace(conv, sm); }
 }
 
 

@@ -270,7 +270,7 @@ void TmpTileset::Slice::saveAtlas(const TileId &tileId, const Atlas &atlas)
 
 TmpTileset::TmpTileset(const boost::filesystem::path &root
                        , bool create)
-    : root_(root)
+    : root_(root), keep_(false)
 {
     if (create) {
         // make room for tilesets
@@ -295,7 +295,9 @@ TmpTileset::TmpTileset(const boost::filesystem::path &root
 TmpTileset::~TmpTileset()
 {
     // cleanup
-    fs::remove_all(root_);
+    if (!keep_) {
+        fs::remove_all(root_);
+    }
 }
 
 void TmpTileset::store(const TileId &tileId, const Mesh &mesh
