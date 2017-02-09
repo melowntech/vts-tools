@@ -4,6 +4,8 @@ define_module(LIBRARY vtstools
   )
 
 set(vtstools_SOURCES
+  tmptileset.hpp tmptileset.cpp
+  repackatlas.hpp repackatlas.cpp
   )
 
 add_library(vtstools STATIC ${vtstools_SOURCES})
@@ -29,15 +31,17 @@ buildsys_target_compile_definitions(vtstools ${MODULE_DEFINITIONS})
 define_module(BINARY vef2vts
   DEPENDS vtstools vts-libs vef dbglog service)
 set(vef2vts_SOURCES
-  vef2vts.cpp
-  tmptileset.hpp tmptileset.cpp
-  repackatlas.hpp repackatlas.cpp
-  )
+  vef2vts.cpp)
 
 add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2vts ${MODULE_DEFINITIONS})
 buildsys_binary(vef2vts)
+
+add_executable(tmptscp tmptscp.cpp)
+target_link_libraries(tmptscp ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
+buildsys_binary(tmptscp)
 
 # ------------------------------------------------------------------------
 # installation

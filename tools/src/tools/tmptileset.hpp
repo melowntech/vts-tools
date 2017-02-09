@@ -24,6 +24,11 @@ public:
                , bool crete = true);
     ~TmpTileset();
 
+    /** Keep tmp tileset when destructor kicks in if true.
+     *  Default behaviour is to drop tileset.
+     */
+    void keep(bool value) { keep_ = value; };
+
     void store(const vts::TileId &tileId, const vts::Mesh &mesh
                , const Atlas &atlas);
 
@@ -52,6 +57,7 @@ private:
     class Slice;
 
     boost::filesystem::path root_;
+    bool keep_;
 
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<Slice>> slices_;
