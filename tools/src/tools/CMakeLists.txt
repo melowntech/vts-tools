@@ -1,6 +1,10 @@
+set(common_DEPENDS
+  dbglog>=1.4 vts-libs>=1.7 service>=1.6
+  )
+
 # support library for VTS tools
 define_module(LIBRARY vtstools
-  DEPENDS dbglog vts-libs
+  DEPENDS ${common_DEPENDS}
   )
 
 set(vtstools_SOURCES
@@ -29,7 +33,7 @@ buildsys_target_compile_definitions(vtstools ${MODULE_DEFINITIONS})
 # ------------------------------------------------------------------------
 # vef2vts tool
 define_module(BINARY vef2vts
-  DEPENDS vtstools vts-libs vef dbglog service)
+  DEPENDS vtstools ${common_DEPENDS} vef>=1.0)
 set(vef2vts_SOURCES
   vef2vts.cpp)
 
