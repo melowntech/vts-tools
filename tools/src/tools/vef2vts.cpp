@@ -1204,6 +1204,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             = vts::mergeSubmeshes
             (tileId, std::get<0>(loaded), std::get<1>(loaded)
              , config_.textureQuality);
+
+        // mesh in SDS -> pre-compute geom extents
+        tile.geomExtents = geomExtents(*tile.mesh);
     }
 
     // generate external texture coordinates
