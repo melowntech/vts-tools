@@ -7,7 +7,7 @@
 
 #include "./repackatlas.hpp"
 
-namespace vadstena { namespace vts { namespace tools {
+namespace vtslibs { namespace vts { namespace tools {
 
 inline math::Point2d denormalize(const math::Point2d &p
                                  , const cv::Size &texSize)
@@ -294,4 +294,4 @@ void repack(const TileId &tileId, vts::Mesh &mesh, opencv::Atlas &atlas)
     }
 }
 
-} } } // namespace vadstena::vts::tools
+} } } // namespace vtslibs::vts::tools

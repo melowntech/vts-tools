@@ -58,10 +58,10 @@ namespace bio = boost::iostreams;
 namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
 namespace ublas = boost::numeric::ublas;
-namespace vs = vadstena::storage;
-namespace vr = vadstena::registry;
-namespace vts = vadstena::vts;
-namespace tools = vadstena::vts::tools;
+namespace vs = vtslibs::storage;
+namespace vr = vtslibs::registry;
+namespace vts = vtslibs::vts;
+namespace tools = vtslibs::vts::tools;
 namespace vef = vadstena::vef;
 
 namespace {
@@ -132,7 +132,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("input", po::value(&input_)->required()
-         , "Path to input vadstena export format (VEF) archive.")
+         , "Path to input vtslibs export format (VEF) archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("tilesetId", po::value(&config_.tilesetId)->required()

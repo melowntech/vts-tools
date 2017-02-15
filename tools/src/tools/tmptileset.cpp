@@ -17,7 +17,7 @@
 namespace fs = boost::filesystem;
 namespace bin = utility::binaryio;
 
-namespace vadstena { namespace vts { namespace tools {
+namespace vtslibs { namespace vts { namespace tools {
 
 namespace {
 
@@ -392,4 +392,4 @@ TileIndex TmpTileset::tileIndex() const
     return ti;
 }
 
-} } } // namespace vadstena::vts::tools
+} } } // namespace vtslibs::vts::tools
