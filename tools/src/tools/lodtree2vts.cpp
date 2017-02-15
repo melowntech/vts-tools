@@ -40,10 +40,10 @@
 
 #include "data/empty.jpg.hpp"
 
-namespace vs = vadstena::storage;
-namespace vr = vadstena::registry;
-namespace vts = vadstena::vts;
-namespace tools = vadstena::vts::tools;
+namespace vs = vtslibs::storage;
+namespace vr = vtslibs::registry;
+namespace vts = vtslibs::vts;
+namespace tools = vtslibs::vts::tools;
 namespace po = boost::program_options;
 namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
