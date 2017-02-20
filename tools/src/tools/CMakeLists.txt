@@ -48,22 +48,6 @@ buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
 buildsys_binary(tmptscp)
 
 # ------------------------------------------------------------------------
-# gdaltest tool
-define_module(BINARY gdaltest
-  DEPENDS vtstools dbglog service vts-libs geo)
-
-
-set(gdaltest_SOURCES
-    gdaltest.cpp
-)
-
-add_executable(gdaltest ${gdaltest_SOURCES})
-target_link_libraries(gdaltest ${MODULE_LIBRARIES})
-buildsys_target_compile_definitions(gdaltest ${MODULE_DEFINITIONS})
-buildsys_binary(gdaltest)
-
-
-# ------------------------------------------------------------------------
 # installation
 
 install(TARGETS  vef2vts
