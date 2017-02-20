@@ -81,13 +81,14 @@ struct Config {
     double borderClipMargin;
     double sigmaEditCoef;
     bool resume;
+    bool keepTmpset;
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , forceWatertight(false), clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5), resume(false)
+        , sigmaEditCoef(1.5), resume(false), keepTmpset(false)
     {}
 };
 
@@ -194,6 +195,8 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("resume"
          , "Resumes interrupted encoding. There must be complete (valid) "
          "temporary tileset inside generated tileset. Use with caution.")
+        ("keepTmpset"
+         , "Keep temporary tileset intact on exit.")
         ;
 
     pd
@@ -238,6 +241,7 @@ void Vef2Vts::configure(const po::variables_map &vars)
     }
 
     config_.resume = vars.count("resume");
+    config_.keepTmpset = vars.count("keepTmpset");
 }
 
 bool Vef2Vts::help(std::ostream &out, const std::string &what) const
@@ -591,24 +595,30 @@ NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
                        * f.meridionalScale * f.parallelScale)));
 
     // find best matching lod
+    // FIXME: probably needs to be fixed
     while ((ntLod > lr.min) && (pixelSize < config.ntLodPixelSize)) {
         pixelSize *= 2.0;
         --ntLod;
     }
 
-    return NavtileInfo(vts::LodRange(lr.min, ntLod), pixelSize);
+    return NavtileInfo(vts::LodRange(minLod, ntLod), pixelSize);
 }
 
 struct HmAccumulator {
     NavtileInfo ntInfo;
     vts::HeightMap::Accumulator hma;
-    vts::CsConvertor toNavSrs;
+    std::string sds;
+    std::string navigationSrs;
 
     HmAccumulator(const vr::ReferenceFrame &rf, const vts::RFNode &node
                   , const NavtileInfo &ntInfo)
         : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
-        , toNavSrs(node.srs, rf.model.navigationSrs)
+        , sds(node.srs), navigationSrs(rf.model.navigationSrs)
     {}
+
+    vts::CsConvertor toNavSrs() const {
+        return vts::CsConvertor(sds, navigationSrs);
+    }
 
     typedef std::map<const vts::RFNode*, HmAccumulator> map;
 };
@@ -1108,6 +1118,8 @@ public:
         , config_(config)
         , tmpset_(path / "tmp")
     {
+        tmpset_.keep(config.keepTmpset);
+
         // cut tiles to temporary
         cutTiles(input, tmpset_, referenceFrame(), config_
                  , accumulatorMap_);
@@ -1125,6 +1137,8 @@ public:
         , config_(config)
         , tmpset_(path / "tmp", false)
     {
+        tmpset_.keep(config.keepTmpset);
+
         load(tmpset_.root() / "navtile.info", referenceFrame()
              , accumulatorMap_);
         prepare();
@@ -1313,12 +1327,36 @@ void Encoder::rasterizeNavTile(const vts::TileId &tileId
 
     // invalid heightmap value (i.e. initial value) is +oo and we take minimum
     // of all rasterized heights in given place
-    rasterizeMesh(mesh, hma.toNavSrs
+    rasterizeMesh(mesh, hma.toNavSrs()
                   , mesh2grid(nodeInfo.extents(), hma.hma.tileSize())
                   , hma.hma.tileSize(), [&](int x, int y, float z)
     {
         auto &value(hm.at<float>(y, x));
-        if (z < value) { value = z; }
+        if (z > value) { value = z; }
+    });
+}
+
+void fillSurrogate(vts::TileSet &ts, const vts::TileIndex &ti
+                   , const vts::HeightMap &hm
+                   , const vts::NodeInfo &root, vts::Lod lod
+                   , const vts::TileRange &tileRange)
+{
+    LOG(info3) << "Computing surrogates at lod " << lod << " from "
+               << "heightmap " << hm.size() << ".";
+
+    traverse(ti, lod
+             , [&](const vts::TileId &tileId
+                   , vts::QTree::value_type flags)
+    {
+        // process only tiles with mesh
+        if (!(flags & vts::TileIndex::Flag::mesh)) { return; }
+        if (!inside(tileRange, vts::point(tileId))) { return; }
+
+        const auto ni(root.child(tileId));
+        const auto center(math::center(ni.extents()));
+        if (auto height = hm.reconstruct(center)) {
+            ts.setSurrogateValue(tileId, *height);
+        }
     });
 }
 
@@ -1327,8 +1365,12 @@ void Encoder::finish(vts::TileSet &ts)
     boost::optional<vts::HeightMap::BestPosition> bestPosition;
     const auto &navigationSrs(referenceFrame().model.navigationSrs);
 
+    const auto &ti(ts.tileIndex());
+    const auto lodRange(ti.lodRange());
+
     for (auto &item : accumulatorMap_) {
         const auto &rfnode(*item.first);
+        const vts::NodeInfo ni(referenceFrame(), rfnode.id);
         auto &hma(item.second);
 
         vts::HeightMap hm
@@ -1350,25 +1392,82 @@ void Encoder::finish(vts::TileSet &ts)
 
         const auto &lr(hma.ntInfo.lodRange);
 
+        // limit of navtile's influence
+        const vts::Lod nt2Tilelimit(lr.max + vts::NavTile::binOrder);
+        // prefill by defaults
+        vts::Lod tileLod(lodRange.max);
+        auto tileRange(vts::childRange(rfnode.id, tileLod - rfnode.id.lod));
+
+        if (tileLod > nt2Tilelimit) {
+            // there are some tiles deeper under then navtile influence; let's
+            // generate their surrogates from bottom navtiles
+
+            for (; tileLod > nt2Tilelimit;
+                 --tileLod, tileRange = vts::parentRange(tileRange))
+            {
+                fillSurrogate(ts, ti, hm, ni, tileLod, tileRange);
+            }
+        } else {
+            // data under navtile's influence, peg to bottom navtile lod
+            tileLod = nt2Tilelimit;
+            tileRange = vts::childRange(rfnode.id, tileLod - rfnode.id.lod);
+        }
+
+        LOG(info4) << "Extracting navtiles.";
+
         // iterate in nt lod range backwards: iterate from start and invert
         // forward lod into backward lod
-        for (auto lod(lr.max); lod >= lr.min; --lod) {
+        for (auto lod(lr.max); lod >= lr.min; --lod, --tileLod
+                 , tileRange = vts::parentRange(tileRange))
+        {
+            LOG(info4) << "Setting navtiles at lod " << lod << ".";
+
             // resize heightmap for given lod
             hm.resize(lod);
 
             // generate and store navtiles
             // FIXME: traverse only part covered by current node
-            traverse(ts.tileIndex(), lod
+            traverse(ti, lod
                      , [&](const vts::TileId &tileId
-                           , vts::QTree::value_type mask)
+                           , vts::QTree::value_type flags)
             {
                 // process only tiles with mesh
-                if (!(mask & vts::TileIndex::Flag::mesh)) { return; }
+                if (!(flags & vts::TileIndex::Flag::mesh)) { return; }
 
                 if (auto nt = hm.navtile(tileId)) {
                     ts.setNavTile(tileId, *nt);
                 }
             });
+
+            if (vs::in(tileLod , lodRange)) {
+                // tile lod is valid, fill surrogates
+                fillSurrogate(ts, ti, hm, ni, tileLod, tileRange);
+            }
+        }
+
+        LOG(info3) << "Navtiles extracted.";
+
+        // force halve that is not covered by resize in main loop
+        if (tileLod >= lodRange.min) {
+            hm.halve();
+        }
+
+        // wind up to first valid lod if not there yet
+        while (tileLod > lodRange.max) {
+            // halve heightmap
+            hm.halve();
+            --tileLod;
+        }
+
+        // process tail
+        for (; in(tileLod, lodRange);
+             --tileLod, tileRange = vts::parentRange(tileRange))
+        {
+            // tile lod is valid, fill surrogates
+            fillSurrogate(ts, ti, hm, ni, tileLod, tileRange);
+
+            // halve heightmap
+            hm.halve();
         }
     }
 
