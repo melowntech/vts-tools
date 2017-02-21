@@ -25,7 +25,7 @@
 #include "vts-libs/vts/meshop.hpp"
 #include "vts-libs/vts/csconvertor.hpp"
 #include "vts-libs/registry/po.hpp"
-#include "vts-libs/vts/heightmap.hpp"
+#include "vts-libs/vts/ntgenerator.hpp"
 
 #include "tinyxml2/tinyxml2.h"
 
@@ -551,6 +551,7 @@ public:
             , const InputTile::list &inputTiles
             , const geo::SrsDefinition &inputSrs
             , const tools::NavTileParams &nt
+            , const std::string &ntsds
             , const Config &config)
         : vts::Encoder(path, properties, mode)
         , inputTiles_(inputTiles)
@@ -559,8 +560,11 @@ public:
         , config_(config)
         , tileMap_(inputTiles, referenceFrame(), 1.0/*config.maxClipMargin()*/)
         , modelCache_(inputTiles, 128)
-        , hma_(nt_.sourceLod)
+        , ntg_(&referenceFrame())
     {
+        ntg_.addAccumulator
+            (ntsds, nt.lodRange, nt.sourceLodPixelSize);
+
         setConstraints(Constraints().setValidTree(tileMap_.validTree()));
         setEstimatedTileCount(tileMap_.size());
     }
@@ -583,7 +587,7 @@ private:
 
     tools::TileMapping tileMap_;
     ModelCache modelCache_;
-    vts::HeightMap::Accumulator hma_;
+    vts::NtGenerator ntg_;
 };
 
 Encoder::TileResult
@@ -649,14 +653,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
                 // update mesh coverage mask
                 updateCoverage(mesh, clipped, nodeInfo.extents());
 
-                // rasterize heightmap
-                if (tileId.lod == nt_.sourceLod) {
-                    tools::generateHeightMap(hma_, tileId, clipped,
-                                             nodeInfo.extents());
-                }
-
-                // convert to destination physical SRS
-                tools::warpInPlace(sds2DstPhy, clipped);
+                // generate external texture coordinates (if division node
+                // allows)
+                generateEtc(clipped, nodeInfo.extents()
+                            , nodeInfo.node().externalTexture);
 
                 // add to output
                 mesh.add(clipped);
@@ -673,9 +673,16 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         return TileResult::Result::noDataYet;
     }
 
+    // add tile to navtile generator
+    ntg_.addTile(tileId, nodeInfo, mesh);
+
     // merge submeshes if allowed
     std::tie(tile.mesh, tile.atlas)
-        = mergeSubmeshes(tileId, tile.mesh, patlas, config_.textureQuality);
+        = vts::mergeSubmeshes
+        (tileId, tile.mesh, patlas, config_.textureQuality);
+
+    // convert to destination physical SRS
+    tools::warpInPlace(sds2DstPhy, *tile.mesh);
 
     if (atlas.empty()) {
         // no atlas -> disable
@@ -693,50 +700,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 
 void Encoder::finish(vts::TileSet &ts)
 {
-    vts::HeightMap hm(std::move(hma_), referenceFrame()
-                      , config_.dtmExtractionRadius / nt_.sourceLodPixelSize);
-
-    vts::HeightMap::BestPosition bestPosition;
-
-    for (int lod = nt_.lodRange.max; lod >= nt_.lodRange.min; --lod)
-    {
-        // resize heightmap for given lod
-        hm.resize(lod);
-
-        // generate and store navtiles
-        traverse(ts.tileIndex(), lod
-                 , [&](const vts::TileId &tileId, vts::QTree::value_type mask)
-        {
-            // process only tiles with mesh
-            if (!(mask & vts::TileIndex::Flag::mesh)) { return; }
-
-            if (auto nt = hm.navtile(tileId)) {
-                ts.setNavTile(tileId, *nt);
-            }
-        });
-
-        if (lod == nt_.lodRange.max) {
-            bestPosition = hm.bestPosition();
-        }
-    }
-
-    // set tileset default position -- TODO
-/*    {
-        vts::CsConvertor sds2nav(???,
-                                 referenceFrame().model.navigationSrs);
-
-        vr::Position pos;
-        pos.position = sds2nav(bestPosition.location);
-
-        pos.type = vr::Position::Type::objective;
-        pos.heightMode = vr::Position::HeightMode::fixed;
-        pos.orientation = { 0.0, -90.0, 0.0 };
-        pos.verticalExtent = bestPosition.verticalExtent;
-        pos.verticalFov = 90;
-        ts.setPosition(pos);
-    }*/
+    // generate navtiles and surrogates
+    ntg_.generate(ts, config_.dtmExtractionRadius);
 }
-
 
 //// main //////////////////////////////////////////////////////////////////////
 
@@ -928,7 +894,7 @@ int LodTree2Vts::run()
     // run the encoder
     LOG(info4) << "Building tile mapping.";
     Encoder enc(output_, properties, createMode_, inputTiles, inputSrs,
-                ntParams, config_);
+                ntParams, sdsNode.srs, config_);
 
     LOG(info4) << "Encoding VTS tiles.";
     enc.run();
