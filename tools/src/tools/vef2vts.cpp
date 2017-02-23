@@ -26,6 +26,7 @@
 
 #include "math/transform.hpp"
 #include "math/filters.hpp"
+#include "math/math.hpp"
 
 #include "imgproc/scanconversion.hpp"
 #include "imgproc/jpeg.hpp"
