@@ -26,6 +26,7 @@
 
 #include "math/transform.hpp"
 #include "math/filters.hpp"
+#include "math/math.hpp"
 
 #include "imgproc/scanconversion.hpp"
 #include "imgproc/jpeg.hpp"
@@ -43,9 +44,9 @@
 #include "vts-libs/vts/csconvertor.hpp"
 #include "vts-libs/vts/meshopinput.hpp"
 #include "vts-libs/vts/meshop.hpp"
-#include "vts-libs/vts/heightmap.hpp"
 #include "vts-libs/vts/math.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
+#include "vts-libs/vts/ntgenerator.hpp"
 
 #include "vef/vef.hpp"
 
@@ -58,10 +59,10 @@ namespace bio = boost::iostreams;
 namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
 namespace ublas = boost::numeric::ublas;
-namespace vs = vadstena::storage;
-namespace vr = vadstena::registry;
-namespace vts = vadstena::vts;
-namespace tools = vadstena::vts::tools;
+namespace vs = vtslibs::storage;
+namespace vr = vtslibs::registry;
+namespace vts = vtslibs::vts;
+namespace tools = vtslibs::vts::tools;
 namespace vef = vadstena::vef;
 
 namespace {
@@ -81,13 +82,14 @@ struct Config {
     double borderClipMargin;
     double sigmaEditCoef;
     bool resume;
+    bool keepTmpset;
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , forceWatertight(false), clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5), resume(false)
+        , sigmaEditCoef(1.5), resume(false), keepTmpset(false)
     {}
 };
 
@@ -132,7 +134,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("input", po::value(&input_)->required()
-         , "Path to input vadstena export format (VEF) archive.")
+         , "Path to input vtslibs export format (VEF) archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("tilesetId", po::value(&config_.tilesetId)->required()
@@ -194,6 +196,8 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("resume"
          , "Resumes interrupted encoding. There must be complete (valid) "
          "temporary tileset inside generated tileset. Use with caution.")
+        ("keepTmpset"
+         , "Keep temporary tileset intact on exit.")
         ;
 
     pd
@@ -238,6 +242,7 @@ void Vef2Vts::configure(const po::variables_map &vars)
     }
 
     config_.resume = vars.count("resume");
+    config_.keepTmpset = vars.count("keepTmpset");
 }
 
 bool Vef2Vts::help(std::ostream &out, const std::string &what) const
@@ -591,74 +596,13 @@ NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
                        * f.meridionalScale * f.parallelScale)));
 
     // find best matching lod
+    // FIXME: probably needs to be fixed
     while ((ntLod > lr.min) && (pixelSize < config.ntLodPixelSize)) {
         pixelSize *= 2.0;
         --ntLod;
     }
 
-    return NavtileInfo(vts::LodRange(lr.min, ntLod), pixelSize);
-}
-
-struct HmAccumulator {
-    NavtileInfo ntInfo;
-    vts::HeightMap::Accumulator hma;
-    vts::CsConvertor toNavSrs;
-
-    HmAccumulator(const vr::ReferenceFrame &rf, const vts::RFNode &node
-                  , const NavtileInfo &ntInfo)
-        : ntInfo(ntInfo), hma(ntInfo.lodRange.max)
-        , toNavSrs(node.srs, rf.model.navigationSrs)
-    {}
-
-    typedef std::map<const vts::RFNode*, HmAccumulator> map;
-};
-
-void save(const fs::path &path, const HmAccumulator::map &map)
-{
-    utility::ofstreambuf f;
-    f.exceptions(std::ofstream::failbit | std::ofstream::badbit);
-    f.open(path.string(), std::ofstream::out | std::ofstream::trunc);
-
-    for (const auto &item : map) {
-        f << item.first->srs << " " << item.second.ntInfo.lodRange
-          << std::fixed << std::setprecision(9)
-          << " " << item.second.ntInfo.pixelSize << '\n';
-    }
-
-    f.close();
-}
-
-void load(const fs::path &path, const vr::ReferenceFrame &rf
-          , HmAccumulator::map &map)
-{
-    std::ifstream f(path.string());
-
-    std::string srs;
-    NavtileInfo ntInfo;
-    while (f >> srs >> ntInfo.lodRange >> ntInfo.pixelSize) {
-        const vts::RFNode *node(nullptr);
-        for (const auto &item : rf.division.nodes) {
-            if (item.second.srs == srs) {
-                node = &item.second;
-                break;
-            }
-        }
-        if (!node) {
-            LOGTHROW(err2, std::runtime_error)
-                << "Cannot find node by srs <" << srs << ">.";
-        }
-
-        map.insert
-            (HmAccumulator::map::value_type
-             (node, HmAccumulator(rf, *node, ntInfo)));
-    }
-
-    if (!f.eof()) {
-        LOGTHROW(err2, std::runtime_error)
-            << "Unable to load navtile info from " << path << ".";
-    }
-
-    f.close();
+    return NavtileInfo(vts::LodRange(minLod, ntLod), pixelSize);
 }
 
 class Analyzer {
@@ -666,7 +610,7 @@ public:
     Analyzer(const std::vector<vef::VadstenaArchive> &input
              , const vr::ReferenceFrame &rf
              , const Config &config
-             , HmAccumulator::map &accumulatorMap)
+             , vts::NtGenerator &ntg)
         : rf_(rf), config_(config)
         , nodes_(vts::NodeInfo::nodes(rf_))
     {
@@ -703,9 +647,8 @@ public:
         }
 
         for (const auto &item : ntMap_) {
-            accumulatorMap.insert
-                (HmAccumulator::map::value_type
-                 (item.first, HmAccumulator(rf, *item.first, item.second)));
+            ntg.addAccumulator(item.first->srs, item.second.lodRange
+                               , item.second.pixelSize);
         }
     }
 
@@ -1078,10 +1021,10 @@ void cutTiles(const std::vector<vef::VadstenaArchive> &input
               , tools::TmpTileset &tmpset
               , const vr::ReferenceFrame &rf
               , const Config config
-              , HmAccumulator::map &accumulatorMap)
+              , vts::NtGenerator &ntg)
 {
     // analyze whole input
-    Analyzer analyzer(input, rf, config, accumulatorMap);
+    Analyzer analyzer(input, rf, config, ntg);
     const auto &assignments(analyzer.assignments());
 
     // cut per archive
@@ -1092,7 +1035,7 @@ void cutTiles(const std::vector<vef::VadstenaArchive> &input
     }
 
     tmpset.flush();
-    save(tmpset.root() / "navtile.info", accumulatorMap);
+    ntg.save(tmpset.root() / "navtile.info");
 }
 
 class Encoder : public vts::Encoder {
@@ -1107,10 +1050,12 @@ public:
         : vts::Encoder(path, properties, mode)
         , config_(config)
         , tmpset_(path / "tmp")
+        , ntg_(&referenceFrame())
     {
+        tmpset_.keep(config.keepTmpset);
+
         // cut tiles to temporary
-        cutTiles(input, tmpset_, referenceFrame(), config_
-                 , accumulatorMap_);
+        cutTiles(input, tmpset_, referenceFrame(), config_, ntg_);
 
         prepare();
     }
@@ -1124,9 +1069,9 @@ public:
         : vts::Encoder(path, properties, mode)
         , config_(config)
         , tmpset_(path / "tmp", false)
+        , ntg_(&referenceFrame(), tmpset_.root() / "navtile.info")
     {
-        load(tmpset_.root() / "navtile.info", referenceFrame()
-             , accumulatorMap_);
+        tmpset_.keep(config.keepTmpset);
         prepare();
     }
 
@@ -1148,27 +1093,14 @@ private:
 
     virtual void finish(vts::TileSet &ts);
 
-    void rasterizeNavTile(const vts::TileId &tileId
-                          , const vts::NodeInfo &nodeInfo
-                          , const vts::Mesh &mesh);
-
     const Config config_;
 
     tools::TmpTileset tmpset_;
     vts::TileIndex index_;
     vts::TileIndex validTree_;
 
-    HmAccumulator::map accumulatorMap_;
+    vts::NtGenerator ntg_;
 };
-
-math::Size2 navpaneSizeInPixels(const math::Size2 &sizeInTiles)
-{
-    // NB: navtile is in grid system, border pixels are shared between adjacent
-    // tiles
-    auto s(vts::NavTile::size());
-    return { 1 + sizeInTiles.width * (s.width - 1)
-            , 1 + sizeInTiles.height * (s.height - 1) };
-}
 
 inline void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
 {
@@ -1204,6 +1136,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             = vts::mergeSubmeshes
             (tileId, std::get<0>(loaded), std::get<1>(loaded)
              , config_.textureQuality);
+
+        // mesh in SDS -> pre-compute geom extents
+        tile.geomExtents = geomExtents(*tile.mesh);
     }
 
     // generate external texture coordinates
@@ -1215,8 +1150,8 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         vts::generateCoverage(*tile.mesh, nodeInfo.extents());
     }
 
-    // rasterize navtile (only at defined lod)
-    rasterizeNavTile(tileId, nodeInfo, *tile.mesh);
+    // add tile to navtile generator
+    ntg_.addTile(tileId, nodeInfo, *tile.mesh);
 
     // warp mesh to physical SRS
     warpInPlace(sds2DstPhy, *tile.mesh);
@@ -1228,159 +1163,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     return result;
 }
 
-/** Constructs transformation matrix that maps everything in extents into a grid
- *  of defined size so the grid (0, 0) matches to upper-left extents corner and
- *  grid(gridSize.width - 1, gridSize.width - 1) matches lower-right extents
- *  corner.
- */
-inline math::Matrix4 mesh2grid(const math::Extents2 &extents
-                              , const math::Size2 &gridSize)
-{
-    math::Matrix4 trafo(ublas::identity_matrix<double>(4));
-
-    auto es(size(extents));
-
-    // scales
-    math::Size2f scale((gridSize.width - 1) / es.width
-                       , (gridSize.height - 1) / es.height);
-
-    // scale to grid
-    trafo(0, 0) = scale.width;
-    trafo(1, 1) = -scale.height;
-
-    // place zero to upper-left corner
-    trafo(0, 3) = -extents.ll(0) * scale.width;
-    trafo(1, 3) = extents.ur(1) * scale.height;
-
-    return trafo;
-}
-
-template <typename Op>
-void rasterizeMesh(const vts::Mesh &mesh, const vts::CsConvertor &toNavSrs
-                   , const math::Matrix4 &trafo
-                   , const math::Size2 &rasterSize, Op op)
-{
-    math::Points3 vertices;
-    std::vector<imgproc::Scanline> scanlines;
-    cv::Point3f tri[3];
-
-    for (const auto &sm : mesh) {
-        vertices.reserve(sm.vertices.size());
-        vertices.clear();
-        for (auto v : sm.vertices) {
-            v(2) = toNavSrs(v)(2);
-            vertices.push_back(transform(trafo, v));
-        }
-
-        for (const auto &face : sm.faces) {
-            for (int i(0); i < 3; ++i) {
-                const auto &p(vertices[face[i]]);
-                tri[i].x = p(0);
-                tri[i].y = p(1);
-                tri[i].z = p(2);
-            }
-
-            scanlines.clear();
-            imgproc::scanConvertTriangle(tri, 0, rasterSize.height, scanlines);
-
-            for (const auto &sl : scanlines) {
-                imgproc::processScanline(sl, 0, rasterSize.width, op);
-            }
-        }
-    }
-}
-
-void Encoder::rasterizeNavTile(const vts::TileId &tileId
-                               , const vts::NodeInfo &nodeInfo
-                               , const vts::Mesh &mesh)
-{
-    // grab accumulator
-    auto faccumulatorMap(accumulatorMap_.find(&nodeInfo.subtree().root()));
-    if (faccumulatorMap == accumulatorMap_.end()) { return; }
-    auto &hma(faccumulatorMap->second);
-    if (tileId.lod != hma.ntInfo.lodRange.max) { return; }
-
-    auto &hm([&]() -> cv::Mat&
-    {
-        cv::Mat *hm(nullptr);
-        UTILITY_OMP(critical(getnavtile))
-            hm = &hma.hma.tile(tileId);
-        return *hm;
-    }());
-
-    // invalid heightmap value (i.e. initial value) is +oo and we take minimum
-    // of all rasterized heights in given place
-    rasterizeMesh(mesh, hma.toNavSrs
-                  , mesh2grid(nodeInfo.extents(), hma.hma.tileSize())
-                  , hma.hma.tileSize(), [&](int x, int y, float z)
-    {
-        auto &value(hm.at<float>(y, x));
-        if (z < value) { value = z; }
-    });
-}
-
 void Encoder::finish(vts::TileSet &ts)
 {
-    boost::optional<vts::HeightMap::BestPosition> bestPosition;
-    const auto &navigationSrs(referenceFrame().model.navigationSrs);
-
-    for (auto &item : accumulatorMap_) {
-        const auto &rfnode(*item.first);
-        auto &hma(item.second);
-
-        vts::HeightMap hm
-            (std::move(hma.hma), referenceFrame()
-             , config_.dtmExtractionRadius / hma.ntInfo.pixelSize);
-
-        // use best position if better than previous
-        {
-            auto bp(hm.bestPosition());
-            if (!bestPosition
-                || (bp.verticalExtent > bestPosition->verticalExtent))
-            {
-                bp.location
-                    = vts::CsConvertor(rfnode.srs, navigationSrs)
-                    (bp.location);
-                bestPosition = bp;
-            }
-        }
-
-        const auto &lr(hma.ntInfo.lodRange);
-
-        // iterate in nt lod range backwards: iterate from start and invert
-        // forward lod into backward lod
-        for (auto lod(lr.max); lod >= lr.min; --lod) {
-            // resize heightmap for given lod
-            hm.resize(lod);
-
-            // generate and store navtiles
-            // FIXME: traverse only part covered by current node
-            traverse(ts.tileIndex(), lod
-                     , [&](const vts::TileId &tileId
-                           , vts::QTree::value_type mask)
-            {
-                // process only tiles with mesh
-                if (!(mask & vts::TileIndex::Flag::mesh)) { return; }
-
-                if (auto nt = hm.navtile(tileId)) {
-                    ts.setNavTile(tileId, *nt);
-                }
-            });
-        }
-    }
-
-    // use best position if available
-    if (bestPosition) {
-        vr::Position pos;
-        pos.position = bestPosition->location;
-
-        pos.type = vr::Position::Type::objective;
-        pos.heightMode = vr::Position::HeightMode::fixed;
-        pos.orientation = { 0.0, -90.0, 0.0 };
-        pos.verticalExtent = bestPosition->verticalExtent;
-        pos.verticalFov = 55;
-        ts.setPosition(pos);
-    }
+    ntg_.generate(ts, config_.dtmExtractionRadius);
 }
 
 int Vef2Vts::run()

@@ -16,7 +16,7 @@
 #include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 
-namespace vadstena { namespace vts { namespace tools {
+namespace vtslibs { namespace vts { namespace tools {
 
 class TmpTileset {
 public:
@@ -63,7 +63,7 @@ private:
     std::vector<std::shared_ptr<Slice>> slices_;
 };
 
-} } } // namespace vadstena::vts::tools
+} } } // namespace vtslibs::vts::tools
 
 #endif // vts_tools_tmptileset_hpp_included
 
