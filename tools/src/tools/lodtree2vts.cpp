@@ -681,6 +681,8 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         = vts::mergeSubmeshes
         (tileId, tile.mesh, patlas, config_.textureQuality);
 
+    // NB: do not use `mesh` from here (broken reference!)
+
     // convert to destination physical SRS
     tools::warpInPlace(sds2DstPhy, *tile.mesh);
 
