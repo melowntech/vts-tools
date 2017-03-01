@@ -21,6 +21,7 @@
 #include "utility/progress.hpp"
 #include "utility/openmp.hpp"
 #include "utility/limits.hpp"
+#include "utility/binaryio.hpp"
 
 #include "service/cmdline.hpp"
 
@@ -344,29 +345,29 @@ private:
     VertexMap *tcMap_;
 };
 
-bool loadGzippedObj(ObjLoader &loader, const fs::path &path)
+bool loadGzippedObj(ObjLoader &loader, const vef::VadstenaArchive &archive
+                    , const fs::path &path)
 {
-    std::ifstream f(path.string());
-    if (!f.good()) { return false; }
-
+    auto f(archive.istream(path));
     bio::filtering_istream gzipped;
     gzipped.push
         (bio::gzip_decompressor(bio::gzip_params().window_bits, 1 << 16));
-    gzipped.push(f);
+    gzipped.push(f->get());
 
     auto res(loader.parse(gzipped));
-    f.close();
+    f->close();
     return res;
 }
 
-bool loadObj(ObjLoader &loader, const vef::Window &window)
+bool loadObj(ObjLoader &loader, const vef::VadstenaArchive &archive
+             , const vef::Window &window)
 {
     switch (window.mesh.format) {
     case vef::Mesh::Format::obj:
-        return loader.parse(window.mesh.path);
+        return loader.parse(*archive.istream(window.mesh.path));
 
     case vef::Mesh::Format::gzippedObj:
-        return loadGzippedObj(loader, window.mesh.path);
+        return loadGzippedObj(loader, archive, window.mesh.path);
     }
     throw;
 }
@@ -628,7 +629,7 @@ public:
                     // calculate assignment
                     const auto &loddedWindow(manifest.windows[i]);
                     const auto assignment
-                        (assign(*manifest.srs
+                        (assign(*manifest.srs, archive
                                 , loddedWindow.lods.front()
                                 , loddedWindow.lods.size() - 1));
                     // store
@@ -659,6 +660,7 @@ public:
 private:
     void analyze(Assignment::maplist &assignments);
     Assignment::map assign(const geo::SrsDefinition &inputSrs
+                           , const vef::VadstenaArchive &archive
                            , const vef::Window &window, std::size_t lodCount);
 
     const vr::ReferenceFrame &rf_;
@@ -693,6 +695,7 @@ void Analyzer::analyze(Assignment::maplist &assignments)
 }
 
 Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
+                                 , const vef::VadstenaArchive &archive
                                  , const vef::Window &window
                                  , std::size_t lodCount)
 {
@@ -700,7 +703,7 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
     ObjLoader loader;
 
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loadObj(loader, window)) {
+    if (!loadObj(loader, archive, window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
@@ -796,10 +799,11 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
 
 class Cutter {
 public:
-    Cutter(tools::TmpTileset &tmpset, const vef::Manifest &manifest
+    Cutter(tools::TmpTileset &tmpset, const vef::VadstenaArchive &archive
            , const vr::ReferenceFrame &rf, const Config &config
            , const Assignment::maplist &assignments)
-        : tmpset_(tmpset), manifest_(manifest), rf_(rf)
+        : tmpset_(tmpset), archive_(archive)
+        , manifest_(archive_.manifest()), rf_(rf)
         , inputSrs_(*manifest_.srs), config_(config)
         , nodes_(vts::NodeInfo::nodes(rf_))
     {
@@ -819,7 +823,10 @@ private:
     void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
                  , const vts::opencv::Atlas &atlas);
 
+    cv::Mat loadTexture(const fs::path &path) const;
+
     tools::TmpTileset &tmpset_;
+    const vef::VadstenaArchive &archive_;
     const vef::Manifest &manifest_;
     const vr::ReferenceFrame &rf_;
     const geo::SrsDefinition &inputSrs_;
@@ -828,6 +835,36 @@ private:
 
     NavtileInfo::map ntMap_;
 };
+
+cv::Mat Cutter::loadTexture(const fs::path &path) const
+{
+    if (archive_.directAccess()) {
+        // optimized access
+        auto tex(cv::imread(path.string()));
+        if (!tex.data) {
+            LOGTHROW(err2, std::runtime_error)
+                << "Unable to load texture from " << path << ".";
+        }
+    }
+
+    auto is(archive_.istream(path));
+
+    auto &s(is->get());
+    auto size(s.seekg(0, std::ios_base::end).tellg());
+    s.seekg(0);
+    std::vector<unsigned char> buf;
+    buf.resize(size);
+    utility::binaryio::read(s, buf.data(), buf.size());
+
+    auto tex(cv::imdecode(buf, CV_LOAD_IMAGE_COLOR));
+
+    if (!tex.data) {
+        LOGTHROW(err2, std::runtime_error)
+            << "Unable to load texture from " << is->path() << ".";
+    }
+
+    return tex;
+}
 
 void Cutter::cut(const Assignment::maplist &assignments)
 {
@@ -848,13 +885,14 @@ void Cutter::cut(const Assignment::maplist &assignments)
         }
 }
 
+
 void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
                        , const Assignment::map &assignemnts)
 {
     // load mesh
     ObjLoader loader;
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loadObj(loader, window)) {
+    if (!loadObj(loader, archive_, window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
@@ -868,13 +906,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
     vts::opencv::Atlas inAtlas;
     for (const auto &texture : window.atlas) {
         LOG(info3) << "Loading window texture from: " << texture.path;
-        auto tex(cv::imread(texture.path.string()));
-        if (!tex.data) {
-            LOGTHROW(err2, std::runtime_error)
-                << "Unable to load texture from " << texture.path << ".";
-        }
-
-        inAtlas.add(tex);
+        inAtlas.add(loadTexture(texture.path));
     }
 
     // get input mesh
@@ -1030,7 +1062,7 @@ void cutTiles(const std::vector<vef::VadstenaArchive> &input
     // cut per archive
     auto iassignments(assignments.begin());
     for (const auto &archive : input) {
-        Cutter(tmpset, archive.manifest(), rf, config
+        Cutter(tmpset, archive, rf, config
                , *iassignments++);
     }
 
