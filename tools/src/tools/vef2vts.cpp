@@ -24,6 +24,7 @@
 #include "utility/binaryio.hpp"
 
 #include "service/cmdline.hpp"
+#include "service/verbosity.hpp"
 
 #include "math/transform.hpp"
 #include "math/filters.hpp"
@@ -112,10 +113,15 @@ private:
     virtual void configure(const po::variables_map &vars)
         UTILITY_OVERRIDE;
 
+    virtual void preNotifyHook(const po::variables_map &vars)
+        UTILITY_OVERRIDE;
+
     virtual bool help(std::ostream &out, const std::string &what) const
         UTILITY_OVERRIDE;
 
     virtual int run() UTILITY_OVERRIDE;
+
+    int analyze(const po::variables_map &vars);
 
     fs::path output_;
     std::vector<fs::path> input_;
@@ -130,6 +136,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
                              , po::positional_options_description &pd)
 {
     vr::registryConfiguration(cmdline, vr::defaultPath());
+    service::verbosityConfiguration(cmdline);
 
     cmdline.add_options()
         ("output", po::value(&output_)->required()
@@ -199,6 +206,9 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "temporary tileset inside generated tileset. Use with caution.")
         ("keepTmpset"
          , "Keep temporary tileset intact on exit.")
+
+        ("analyzeOnly"
+         , "If set, do not process the file, only analyze it.")
         ;
 
     pd
@@ -206,6 +216,13 @@ void Vef2Vts::configuration(po::options_description &cmdline
         .add("input", -1);
 
     (void) config;
+}
+
+void Vef2Vts::preNotifyHook(const po::variables_map &vars)
+{
+    if (vars.count("analyzeOnly")) {
+        service::immediateExit(analyze(vars));
+    }
 }
 
 void Vef2Vts::configure(const po::variables_map &vars)
@@ -1232,6 +1249,142 @@ int Vef2Vts::run()
 
     // all done
     LOG(info4) << "All done.";
+    return EXIT_SUCCESS;
+}
+
+class ExtentsFinder : public geometry::ObjParserBase {
+public:
+    ExtentsFinder(math::Extents2 &extents
+                  , const geo::SrsDefinition &srs
+                  , const geo::SrsDefinition &geogcs)
+        : extents_(extents), conv_(srs, geogcs)
+    {}
+
+private:
+    virtual void addVertex(const Vector3d &v) {
+        math::update(extents_, conv_(math::Point3(v.x, v.y, v.z)));
+    }
+
+    virtual void addTexture(const Vector3d&) {}
+
+    virtual void addFacet(const Facet &) {}
+
+    virtual void useMaterial(const std::string&) {}
+
+    virtual void addNormal(const Vector3d&) { /*ignored*/ }
+    virtual void materialLibrary(const std::string&) { /*ignored*/ }
+
+    math::Extents2& extents_;
+    geo::CsConvertor conv_;
+};
+
+bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
+                    , const fs::path &path)
+{
+    auto f(archive.istream(path));
+    bio::filtering_istream gzipped;
+    gzipped.push
+        (bio::gzip_decompressor(bio::gzip_params().window_bits, 1 << 16));
+    gzipped.push(f->get());
+
+    auto res(loader.parse(gzipped));
+    f->close();
+    return res;
+}
+
+bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
+                    , const vef::Window &window)
+{
+    switch (window.mesh.format) {
+    case vef::Mesh::Format::obj:
+        return loader.parse(*archive.istream(window.mesh.path));
+
+    case vef::Mesh::Format::gzippedObj:
+        return measureExtents(loader, archive, window.mesh.path);
+    }
+    throw;
+}
+
+void updateExtents(const vef::VadstenaArchive &archive
+                   , const geo::SrsDefinition &geogcs
+                   , math::Extents2 &extents)
+{
+    for (const auto &loddedWindow : archive.manifest().windows) {
+        if (loddedWindow.lods.empty()) { continue; }
+
+        ExtentsFinder ef(extents, *archive.manifest().srs, geogcs);
+        measureExtents(ef, archive, loddedWindow.lods.back());
+    }
+}
+
+bool analyzeInput(const fs::path &input, int verbose
+                  , const geo::SrsDefinition &geogcs
+                  , math::Extents2 &extents)
+{
+    vef::VadstenaArchive archive(input);
+    const auto &manifest(archive.manifest());
+    if (!manifest.srs) {
+        return false;
+    }
+
+    if (verbose) {
+        updateExtents(input, geogcs, extents);
+    }
+
+    return true;
+}
+
+int Vef2Vts::analyze(const po::variables_map &vars)
+{
+    // process configuration
+    vr::registryConfigure(vars);
+    auto verbose(service::verbosityConfigure(vars));
+
+    if (!vars.count("input")) {
+        throw po::required_option("input");
+    }
+    const auto input(vars["input"].as<std::vector<fs::path>>());
+
+    if (!vars.count("referenceFrame")) {
+        throw po::required_option("referenceFrame");
+    }
+    const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
+
+    // get reference frame
+    const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
+
+    // get geographic system from physical SRS
+    const auto geogcs(vr::system.srs(referenceFrame.model.navigationSrs)
+                      .srsDef.geographic());
+
+    math::Extents2 extents(math::InvalidExtents{});
+
+    int referenced(0);
+    int unreferenced(0);
+    for (const auto file : input) {
+        if (analyzeInput(file, verbose, geogcs, extents)) {
+            ++referenced;
+        } else {
+            ++unreferenced;
+        }
+    }
+
+    if (referenced) {
+        if (unreferenced) {
+            std::cout << "georeferenced: partial" << std::endl;
+        } else {
+            std::cout << "georeferenced: true" << std::endl;
+            if (verbose) {
+                auto center(math::center(extents));
+                std::cout << "geogcs: " << geogcs << std::endl;
+                std::cout << "center: " << std::fixed << std::setprecision(9)
+                          << center(0) << "," << center(1) << std::endl;
+            }
+        }
+    } else {
+        std::cout << "georeferenced: false" << std::endl;
+    }
+
     return EXIT_SUCCESS;
 }
 
