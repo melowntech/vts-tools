@@ -1317,8 +1317,8 @@ void updateExtents(const vef::VadstenaArchive &archive
     }
 }
 
-bool analyzeInput(const fs::path &input, int verbose
-                  , const geo::SrsDefinition &geogcs
+bool analyzeInput(const fs::path &input
+                  , const boost::optional<geo::SrsDefinition> &geogcs
                   , math::Extents2 &extents)
 {
     vef::VadstenaArchive archive(input);
@@ -1327,8 +1327,8 @@ bool analyzeInput(const fs::path &input, int verbose
         return false;
     }
 
-    if (verbose) {
-        updateExtents(input, geogcs, extents);
+    if (geogcs) {
+        updateExtents(input, *geogcs, extents);
     }
 
     return true;
@@ -1345,24 +1345,27 @@ int Vef2Vts::analyze(const po::variables_map &vars)
     }
     const auto input(vars["input"].as<std::vector<fs::path>>());
 
-    if (!vars.count("referenceFrame")) {
-        throw po::required_option("referenceFrame");
+    boost::optional<geo::SrsDefinition> geogcs;
+    if (verbose) {
+        if (!vars.count("referenceFrame")) {
+            throw po::required_option("referenceFrame");
+        }
+        const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
+
+        // get reference frame
+        const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
+
+        // get geographic system from physical SRS
+        geogcs = vr::system.srs(referenceFrame.model.navigationSrs)
+            .srsDef.geographic();
     }
-    const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
-
-    // get reference frame
-    const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
-
-    // get geographic system from physical SRS
-    const auto geogcs(vr::system.srs(referenceFrame.model.navigationSrs)
-                      .srsDef.geographic());
 
     math::Extents2 extents(math::InvalidExtents{});
 
     int referenced(0);
     int unreferenced(0);
     for (const auto file : input) {
-        if (analyzeInput(file, verbose, geogcs, extents)) {
+        if (analyzeInput(file, geogcs, extents)) {
             ++referenced;
         } else {
             ++unreferenced;
