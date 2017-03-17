@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <iterator>
 
-#include <boost/algorithm/string/split.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
 #include <boost/optional/optional_io.hpp>
@@ -59,7 +58,6 @@
 
 namespace po = boost::program_options;
 namespace bio = boost::iostreams;
-namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
 namespace ublas = boost::numeric::ublas;
 namespace vs = vtslibs::storage;
@@ -137,6 +135,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
                              , po::positional_options_description &pd)
 {
     vr::registryConfiguration(cmdline, vr::defaultPath());
+    vr::creditsConfiguration(cmdline);
     service::verbosityConfiguration(cmdline);
 
     cmdline.add_options()
@@ -156,9 +155,6 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("textureQuality", po::value(&config_.textureQuality)
          ->default_value(config_.textureQuality)->required()
          , "Texture quality for JPEG texture encoding (0-100).")
-
-        ("credits", po::value<std::string>()
-         , "Comma-separated list of string/numeric credit id.")
 
         ("navtileLodPixelSize"
          , po::value(&config_.ntLodPixelSize)
@@ -229,27 +225,11 @@ void Vef2Vts::preNotifyHook(const po::variables_map &vars)
 void Vef2Vts::configure(const po::variables_map &vars)
 {
     vr::registryConfigure(vars);
+    config_.credits = vr::creditsConfigure(vars);
 
     createMode_ = (vars.count("overwrite")
                    ? vts::CreateMode::overwrite
                    : vts::CreateMode::failIfExists);
-
-    if (vars.count("credits")) {
-        std::vector<std::string> parts;
-        for (const auto &value
-                 : ba::split(parts, vars["credits"].as<std::string>()
-                             , ba::is_any_of(",")))
-        {
-            vr::Credit credit;
-            try {
-                credit = vr::system.credits(boost::lexical_cast<int>(value));
-            } catch (boost::bad_lexical_cast) {
-                credit = vr::system.credits(value);
-            }
-
-            config_.credits.insert(credit.numericId);
-        }
-    }
 
     if ((config_.textureQuality < 0) || (config_.textureQuality > 100)) {
         throw po::validation_error
