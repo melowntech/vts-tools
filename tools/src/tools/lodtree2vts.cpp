@@ -1,8 +1,6 @@
 #include <cstdlib>
 #include <string>
 
-#include <boost/algorithm/string/split.hpp>
-
 #include "dbglog/dbglog.hpp"
 
 #include "math/transform.hpp"
@@ -45,7 +43,6 @@ namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
 namespace tools = vtslibs::vts::tools;
 namespace po = boost::program_options;
-namespace ba = boost::algorithm;
 namespace fs = boost::filesystem;
 namespace ublas = boost::numeric::ublas;
 namespace xml = tinyxml2;
@@ -283,6 +280,7 @@ void LodTree2Vts::configuration(po::options_description &cmdline
                                , po::positional_options_description &pd)
 {
     vr::registryConfiguration(cmdline, vr::defaultPath());
+    vr::creditsConfiguration(cmdline);
 
     cmdline.add_options()
         ("input", po::value(&input_)->required()
@@ -302,9 +300,6 @@ void LodTree2Vts::configuration(po::options_description &cmdline
         ("textureQuality", po::value(&config_.textureQuality)
          ->default_value(config_.textureQuality)->required()
          , "Texture quality for JPEG texture encoding (0-100).")
-
-        ("credits", po::value<std::string>()
-         , "Comma-separated list of string/numeric credit id.")
 
         ("maxLevel", po::value(&config_.maxLevel)
          ->default_value(config_.maxLevel)
@@ -340,27 +335,11 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 void LodTree2Vts::configure(const po::variables_map &vars)
 {
     vr::registryConfigure(vars);
+    config_.credits = vr::creditsConfigure(vars);
 
     createMode_ = (vars.count("overwrite")
                    ? vts::CreateMode::overwrite
                    : vts::CreateMode::failIfExists);
-
-    if (vars.count("credits")) {
-        std::vector<std::string> parts;
-        for (const auto &value
-                 : ba::split(parts, vars["credits"].as<std::string>()
-                             , ba::is_any_of(",")))
-        {
-            vr::Credit credit;
-            try {
-                credit = vr::system.credits(boost::lexical_cast<int>(value));
-            } catch (boost::bad_lexical_cast) {
-                credit = vr::system.credits(value);
-            }
-
-            config_.credits.insert(credit.numericId);
-        }
-    }
 }
 
 bool LodTree2Vts::help(std::ostream &out, const std::string &what) const
