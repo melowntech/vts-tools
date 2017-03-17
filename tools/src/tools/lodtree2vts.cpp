@@ -847,9 +847,11 @@ int LodTree2Vts::run()
         LOG(info4) << "Using offset " << offset;
     }
 
+    const auto xml(input_ / "LODTreeExport.xml");
+
     // parse the XMLs
-    LOG(info4) << "Parsing " << input_;
-    LodTreeExport lte(input_, offset);
+    LOG(info4) << "Parsing " << xml;
+    LodTreeExport lte(xml, offset);
 
     lte.origin += offset;
 
