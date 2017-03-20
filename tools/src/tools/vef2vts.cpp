@@ -1360,7 +1360,7 @@ int Vef2Vts::analyze(const po::variables_map &vars)
             std::cout << "georeferenced: true" << std::endl;
             if (verbose) {
                 auto center(math::center(extents));
-                std::cout << "geogcs: " << geogcs << std::endl;
+                std::cout << "geogcs: " << *geogcs << std::endl;
                 std::cout << "center: " << std::fixed << std::setprecision(9)
                           << center(0) << "," << center(1) << std::endl;
             }
