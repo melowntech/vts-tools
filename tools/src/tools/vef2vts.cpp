@@ -64,7 +64,6 @@ namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
 namespace tools = vtslibs::vts::tools;
-namespace vef = vadstena::vef;
 
 namespace {
 
@@ -142,7 +141,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("input", po::value(&input_)->required()
-         , "Path to input vtslibs export format (VEF) archive.")
+         , "Path to input VEF archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("tilesetId", po::value(&config_.tilesetId)->required()
@@ -343,7 +342,7 @@ private:
     VertexMap *tcMap_;
 };
 
-bool loadGzippedObj(ObjLoader &loader, const vef::VadstenaArchive &archive
+bool loadGzippedObj(ObjLoader &loader, const roarchive::RoArchive &archive
                     , const fs::path &path)
 {
     auto f(archive.istream(path));
@@ -357,7 +356,7 @@ bool loadGzippedObj(ObjLoader &loader, const vef::VadstenaArchive &archive
     return res;
 }
 
-bool loadObj(ObjLoader &loader, const vef::VadstenaArchive &archive
+bool loadObj(ObjLoader &loader, const roarchive::RoArchive &archive
              , const vef::Window &window)
 {
     switch (window.mesh.format) {
@@ -606,7 +605,7 @@ NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
 
 class Analyzer {
 public:
-    Analyzer(const std::vector<vef::VadstenaArchive> &input
+    Analyzer(const std::vector<vef::Archive> &input
              , const vr::ReferenceFrame &rf
              , const Config &config
              , vts::NtGenerator &ntg)
@@ -658,7 +657,7 @@ public:
 private:
     void analyze(Assignment::maplist &assignments);
     Assignment::map assign(const geo::SrsDefinition &inputSrs
-                           , const vef::VadstenaArchive &archive
+                           , const vef::Archive &archive
                            , const vef::Window &window, std::size_t lodCount);
 
     const vr::ReferenceFrame &rf_;
@@ -693,7 +692,7 @@ void Analyzer::analyze(Assignment::maplist &assignments)
 }
 
 Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
-                                 , const vef::VadstenaArchive &archive
+                                 , const vef::Archive &archive
                                  , const vef::Window &window
                                  , std::size_t lodCount)
 {
@@ -701,7 +700,7 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
     ObjLoader loader;
 
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loadObj(loader, archive, window)) {
+    if (!loadObj(loader, archive.archive(), window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
@@ -797,7 +796,7 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
 
 class Cutter {
 public:
-    Cutter(tools::TmpTileset &tmpset, const vef::VadstenaArchive &archive
+    Cutter(tools::TmpTileset &tmpset, const vef::Archive &archive
            , const vr::ReferenceFrame &rf, const Config &config
            , const Assignment::maplist &assignments)
         : tmpset_(tmpset), archive_(archive)
@@ -824,7 +823,7 @@ private:
     cv::Mat loadTexture(const fs::path &path) const;
 
     tools::TmpTileset &tmpset_;
-    const vef::VadstenaArchive &archive_;
+    const vef::Archive &archive_;
     const vef::Manifest &manifest_;
     const vr::ReferenceFrame &rf_;
     const geo::SrsDefinition &inputSrs_;
@@ -836,25 +835,18 @@ private:
 
 cv::Mat Cutter::loadTexture(const fs::path &path) const
 {
-    if (archive_.directAccess()) {
+    const auto &archive(archive_.archive());
+    if (archive.directio()) {
         // optimized access
-        auto tex(cv::imread(path.string()));
+        auto tex(cv::imread(archive.path(path).string()));
         if (!tex.data) {
             LOGTHROW(err2, std::runtime_error)
                 << "Unable to load texture from " << path << ".";
         }
     }
 
-    auto is(archive_.istream(path));
-
-    auto &s(is->get());
-    auto size(s.seekg(0, std::ios_base::end).tellg());
-    s.seekg(0);
-    std::vector<unsigned char> buf;
-    buf.resize(size);
-    utility::binaryio::read(s, buf.data(), buf.size());
-
-    auto tex(cv::imdecode(buf, CV_LOAD_IMAGE_COLOR));
+    auto is(archive.istream(path));
+    auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
 
     if (!tex.data) {
         LOGTHROW(err2, std::runtime_error)
@@ -890,7 +882,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
     // load mesh
     ObjLoader loader;
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
-    if (!loadObj(loader, archive_, window)) {
+    if (!loadObj(loader, archive_.archive(), window)) {
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
@@ -1047,7 +1039,7 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     tmpset_.store(tileId, clipped, clippedAtlas);
 }
 
-void cutTiles(const std::vector<vef::VadstenaArchive> &input
+void cutTiles(const std::vector<vef::Archive> &input
               , tools::TmpTileset &tmpset
               , const vr::ReferenceFrame &rf
               , const Config config
@@ -1075,7 +1067,7 @@ public:
     Encoder(const boost::filesystem::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
-            , const std::vector<vef::VadstenaArchive> &input
+            , const std::vector<vef::Archive> &input
             , const Config &config)
         : vts::Encoder(path, properties, mode)
         , config_(config)
@@ -1214,12 +1206,12 @@ int Vef2Vts::run()
     }
 
     // load input manifests
-    std::vector<vef::VadstenaArchive> input;
+    std::vector<vef::Archive> input;
     for (const auto &path : input_) {
         input.emplace_back(path);
         if (!input.back().manifest().srs) {
             LOG(fatal)
-                << "Vadstena export format archive " << path
+                << "VEF archive " << path
                 << " doesn't have assigned an SRS, cannot proceed.";
             return EXIT_FAILURE;
         }
@@ -1259,7 +1251,7 @@ private:
     geo::CsConvertor conv_;
 };
 
-bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
+bool measureExtents(ExtentsFinder &loader, const roarchive::RoArchive &archive
                     , const fs::path &path)
 {
     auto f(archive.istream(path));
@@ -1273,7 +1265,7 @@ bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
     return res;
 }
 
-bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
+bool measureExtents(ExtentsFinder &loader, const roarchive::RoArchive &archive
                     , const vef::Window &window)
 {
     switch (window.mesh.format) {
@@ -1286,7 +1278,7 @@ bool measureExtents(ExtentsFinder &loader, const vef::VadstenaArchive &archive
     throw;
 }
 
-void updateExtents(const vef::VadstenaArchive &archive
+void updateExtents(const vef::Archive &archive
                    , const geo::SrsDefinition &geogcs
                    , math::Extents2 &extents)
 {
@@ -1294,7 +1286,7 @@ void updateExtents(const vef::VadstenaArchive &archive
         if (loddedWindow.lods.empty()) { continue; }
 
         ExtentsFinder ef(extents, *archive.manifest().srs, geogcs);
-        measureExtents(ef, archive, loddedWindow.lods.back());
+        measureExtents(ef, archive.archive(), loddedWindow.lods.back());
     }
 }
 
@@ -1302,7 +1294,7 @@ bool analyzeInput(const fs::path &input
                   , const boost::optional<geo::SrsDefinition> &geogcs
                   , math::Extents2 &extents)
 {
-    vef::VadstenaArchive archive(input);
+    vef::Archive archive(input);
     const auto &manifest(archive.manifest());
     if (!manifest.srs) {
         return false;

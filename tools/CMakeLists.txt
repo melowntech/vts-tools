@@ -49,6 +49,7 @@ add_subdirectory(src/service)
 add_subdirectory(src/geo)
 add_subdirectory(src/half)
 add_subdirectory(src/tinyxml2)
+add_subdirectory(src/roarchive)
 
 # vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
