@@ -1326,7 +1326,8 @@ int Vef2Vts::analyze(const po::variables_map &vars)
         const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
 
         // get reference frame
-        const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
+        const auto &referenceFrame
+            (vr::system.referenceFrames(referenceFrameId));
 
         // get geographic system from physical SRS
         geogcs = vr::system.srs(referenceFrame.model.navigationSrs)
