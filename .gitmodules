@@ -37,3 +37,6 @@
 [submodule "externals/vef"]
 	path = externals/vef
 	url = ../../vadstena/vef
+[submodule "externals/roarchive"]
+	path = externals/roarchive
+	url = ../../lib/roarchive
