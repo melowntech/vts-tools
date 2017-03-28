@@ -18,6 +18,7 @@
 #include "roarchive/roarchive.hpp"
 
 #include "service/cmdline.hpp"
+#include "service/verbosity.hpp"
 
 #include "vts-libs/vts.hpp"
 #include "vts-libs/vts/encoder.hpp"
@@ -328,10 +329,15 @@ private:
     virtual void configure(const po::variables_map &vars)
         UTILITY_OVERRIDE;
 
+    virtual void preNotifyHook(const po::variables_map &vars)
+        UTILITY_OVERRIDE;
+
     virtual bool help(std::ostream &out, const std::string &what) const
         UTILITY_OVERRIDE;
 
     virtual int run() UTILITY_OVERRIDE;
+
+    int analyze(const po::variables_map &vars);
 
     fs::path input_;
     fs::path output_;
@@ -347,6 +353,7 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 {
     vr::registryConfiguration(cmdline, vr::defaultPath());
     vr::creditsConfiguration(cmdline);
+    service::verbosityConfiguration(cmdline);
 
     cmdline.add_options()
         ("input", po::value(&input_)->required()
@@ -390,12 +397,21 @@ void LodTree2Vts::configuration(po::options_description &cmdline
         ("offsetZ", po::value(&config_.offsetZ)->default_value(config_.offsetZ),
          "Force Z shift of the model.")
 
+        ("analyzeOnly"
+                , "If set, do not process the file, only analyze it.")
         ;
 
     pd.add("input", 1);
     pd.add("output", 1);
 
     (void) config;
+}
+
+void LodTree2Vts::preNotifyHook(const po::variables_map &vars)
+{
+    if (vars.count("analyzeOnly")) {
+        service::immediateExit(analyze(vars));
+    }
 }
 
 void LodTree2Vts::configure(const po::variables_map &vars)
@@ -937,6 +953,66 @@ int LodTree2Vts::run()
     return EXIT_SUCCESS;
 }
 
+
+int LodTree2Vts::analyze(const po::variables_map &vars)
+{
+    // process configuration
+    vr::registryConfigure(vars);
+    auto verbose(service::verbosityConfigure(vars));
+
+    if (!vars.count("input")) {
+        throw po::required_option("input");
+    }
+    const auto input(vars["input"].as<fs::path>());
+
+    std::cout << "georeferenced: true" << std::endl;
+
+    boost::optional<geo::SrsDefinition> geogcs;
+    if (verbose) {
+        if (!vars.count("referenceFrame")) {
+            throw po::required_option("referenceFrame");
+        }
+        const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
+
+        // get reference frame
+        const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
+
+        // get geographic system from physical SRS
+        geogcs = vr::system.srs(referenceFrame.model.navigationSrs)
+                .srsDef.geographic();
+        geogcs = geo::merge(*geogcs, vr::system.srs(referenceFrame.model.publicSrs)
+                .srsDef);
+
+        roarchive::RoArchive archive(input, LODTreeExport);
+
+        math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
+        if (norm_2(offset) > 0.) {
+            LOG(info4) << "Using offset " << offset;
+        }
+
+        // parse the XMLs
+        LodTreeExport lte(archive, offset);
+
+        lte.origin += offset;
+
+        // TODO: error checking (empty?)
+        auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
+
+        // find a suitable reference frame division node
+//        auto sdsNode =
+//                tools::findSpatialDivisionNode(
+//                        referenceFrame,
+//                        inputSrs, lte.origin);
+//
+//        vts::CsConvertor csconv(inputSrs, *geogcs);
+//
+        // TODO find center
+
+
+    }
+    return 0;
+
+}
 
 } // namespace
 
