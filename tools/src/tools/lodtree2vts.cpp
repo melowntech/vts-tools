@@ -992,22 +992,18 @@ int LodTree2Vts::analyze(const po::variables_map &vars)
 
         // parse the XMLs
         LodTreeExport lte(archive, offset);
-
         lte.origin += offset;
 
         // TODO: error checking (empty?)
-        auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
+        geo::SrsDefinition inputSrs(geo::SrsDefinition::fromString(lte.srs));
+        geo::CsConvertor csconv(inputSrs, *geogcs);
 
-        // find a suitable reference frame division node
-//        auto sdsNode =
-//                tools::findSpatialDivisionNode(
-//                        referenceFrame,
-//                        inputSrs, lte.origin);
-//
-//        vts::CsConvertor csconv(inputSrs, *geogcs);
-//
-        // TODO find center
+        math::Point3 c(csconv(lte.origin));
+        std::cout << "geogcs: " << *geogcs << std::endl;
+        std::cout << "center: " << std::fixed << std::setprecision(9)
+                  << c(0) << " " << c(1) << std::endl;
 
+        // TODO add quantile measurement
 
     }
     return 0;
