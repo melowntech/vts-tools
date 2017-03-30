@@ -1290,9 +1290,20 @@ void updateExtents(const vef::Archive &archive
     }
 }
 
+// TODO
+//void measureQuantilePt(const vef::Archive &archive
+//                      , const geo::SrsDefinition &geogcs
+//                      , math::Point3 &quantilePt)
+//{
+//
+//}
+
+
 bool analyzeInput(const fs::path &input
                   , const boost::optional<geo::SrsDefinition> &geogcs
-                  , math::Extents2 &extents)
+                  , math::Extents2 &extents
+                  /*, math::Point3 & quantilePt
+                  , const service::Verbosity& verbose*/)
 {
     vef::Archive archive(input);
     const auto &manifest(archive.manifest());
@@ -1303,6 +1314,10 @@ bool analyzeInput(const fs::path &input
     if (geogcs) {
         updateExtents(input, *geogcs, extents);
     }
+
+//    if (verbose.level >= 2) {
+//        measureQuantilePt(input, *geogcs, quantilePt);
+//    }
 
     return true;
 }
@@ -1331,15 +1346,18 @@ int Vef2Vts::analyze(const po::variables_map &vars)
 
         // get geographic system from physical SRS
         geogcs = vr::system.srs(referenceFrame.model.navigationSrs)
-            .srsDef.geographic();
+                .srsDef.geographic();
+        geogcs = geo::merge(*geogcs, vr::system.srs(referenceFrame.model.publicSrs)
+                .srsDef);
     }
 
     math::Extents2 extents(math::InvalidExtents{});
+//    math::Point3 quantilePt;
 
     int referenced(0);
     int unreferenced(0);
     for (const auto file : input) {
-        if (analyzeInput(file, geogcs, extents)) {
+        if (analyzeInput(file, geogcs, extents /*, quantilePt, verbose */)) {
             ++referenced;
         } else {
             ++unreferenced;
@@ -1355,7 +1373,11 @@ int Vef2Vts::analyze(const po::variables_map &vars)
                 auto center(math::center(extents));
                 std::cout << "geogcs: " << *geogcs << std::endl;
                 std::cout << "center: " << std::fixed << std::setprecision(9)
-                          << center(0) << "," << center(1) << std::endl;
+                          << center(0) << " " << center(1) << std::endl;
+//                if (verbose.level >= 2) {
+//                    std::cout << "elevation_pt: " << std::fixed << std::setprecision(9)
+//                              << e(0) << " " << e(1) << " " << e(2) << std::endl;
+//                }
             }
         }
     } else {
