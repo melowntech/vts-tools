@@ -26,7 +26,6 @@ find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(magic REQUIRED)
-find_package(URIPARSER REQUIRED)
 
 find_package(Eigen3 3.2 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIR})
@@ -50,6 +49,7 @@ add_subdirectory(src/geo)
 add_subdirectory(src/half)
 add_subdirectory(src/tinyxml2)
 add_subdirectory(src/roarchive)
+add_subdirectory(src/http)
 
 # vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
