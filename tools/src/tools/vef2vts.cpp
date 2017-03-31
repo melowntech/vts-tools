@@ -1251,6 +1251,8 @@ private:
     geo::CsConvertor conv_;
 };
 
+
+// measures gzipped obj extents
 bool measureExtents(ExtentsFinder &loader, const roarchive::RoArchive &archive
                     , const fs::path &path)
 {
@@ -1265,6 +1267,7 @@ bool measureExtents(ExtentsFinder &loader, const roarchive::RoArchive &archive
     return res;
 }
 
+// measures standard obj extents or uses the other function overload
 bool measureExtents(ExtentsFinder &loader, const roarchive::RoArchive &archive
                     , const vef::Window &window)
 {
@@ -1290,20 +1293,94 @@ void updateExtents(const vef::Archive &archive
     }
 }
 
-// TODO
-//void measureQuantilePt(const vef::Archive &archive
-//                      , const geo::SrsDefinition &geogcs
-//                      , math::Point3 &quantilePt)
-//{
-//
-//}
+class QuantileFinder : public geometry::ObjParserBase {
+public:
+    QuantileFinder(const geo::SrsDefinition &srs
+            , const geo::SrsDefinition &geogcs)
+            : conv_(srs, geogcs)
+    {}
+
+    // returns qunatile from vertices added so far
+    void findQuantilePt(float quantile, math::Point3& quantilePt) {
+        // return resulting quantile point from pts sorted by Z coord
+        std::cout << points.size() << "\n";
+        std::nth_element(points.begin()
+                , points.begin() + points.size() * quantile
+                , points.end(),
+                         [](const math::Point3f& lhs, const math::Point3f& rhs) {
+                             return lhs(2) < rhs(2);
+                         }
+        );
+        quantilePt = conv_(points[points.size() * quantile]);
+    }
+
+private:
+    virtual void addVertex(const Vector3d &v) {
+        points.push_back(v);
+    }
+
+    virtual void addTexture(const Vector3d&) {}
+
+    virtual void addFacet(const Facet &) {}
+
+    virtual void useMaterial(const std::string&) {}
+
+    virtual void addNormal(const Vector3d&) { /*ignored*/ }
+    virtual void materialLibrary(const std::string&) { /*ignored*/ }
+
+    math::Points3 points;
+    geo::CsConvertor conv_;
+};
+
+// measures gzipped obj extents
+bool addVerticesToFinder(QuantileFinder &finder, const roarchive::RoArchive &archive
+        , const fs::path &path)
+{
+    auto f(archive.istream(path));
+    bio::filtering_istream gzipped;
+    gzipped.push
+            (bio::gzip_decompressor(bio::gzip_params().window_bits, 1 << 16));
+    gzipped.push(f->get());
+
+    auto res(finder.parse(gzipped));
+    f->close();
+    return res;
+}
+
+// measures standard obj extents or uses the other function overload
+bool addVerticesToFinder(QuantileFinder &finder, const roarchive::RoArchive &archive
+        , const vef::Window &window)
+{
+    switch (window.mesh.format) {
+        case vef::Mesh::Format::obj:
+            return finder.parse(*archive.istream(window.mesh.path));
+
+        case vef::Mesh::Format::gzippedObj:
+            return addVerticesToFinder(finder, archive, window.mesh.path);
+    }
+    throw;
+}
+
+void measureQuantilePt(const vef::Archive &archive
+                      , const geo::SrsDefinition &geogcs
+                      , math::Point3 &quantilePt)
+{
+    QuantileFinder qf(*archive.manifest().srs, geogcs);
+    for (const auto &loddedWindow : archive.manifest().windows) {
+        if (loddedWindow.lods.empty()) { continue; }
+
+        addVerticesToFinder(qf, archive.archive(), loddedWindow.lods.back());
+        //addVerticesToFinder(qf, archive.archive(), *(loddedWindow.lods.end() - 2));
+    }
+    qf.findQuantilePt(0.5f, quantilePt);
+}
 
 
 bool analyzeInput(const fs::path &input
                   , const boost::optional<geo::SrsDefinition> &geogcs
                   , math::Extents2 &extents
-                  /*, math::Point3 & quantilePt
-                  , const service::Verbosity& verbose*/)
+                  , math::Point3 & quantilePt
+                  , const service::Verbosity& verbose)
 {
     vef::Archive archive(input);
     const auto &manifest(archive.manifest());
@@ -1313,11 +1390,11 @@ bool analyzeInput(const fs::path &input
 
     if (geogcs) {
         updateExtents(input, *geogcs, extents);
-    }
 
-//    if (verbose.level >= 2) {
-//        measureQuantilePt(input, *geogcs, quantilePt);
-//    }
+        if (verbose.level >= 2) {
+            measureQuantilePt(input, *geogcs, quantilePt);
+        }
+    }
 
     return true;
 }
@@ -1352,12 +1429,12 @@ int Vef2Vts::analyze(const po::variables_map &vars)
     }
 
     math::Extents2 extents(math::InvalidExtents{});
-//    math::Point3 quantilePt;
+    math::Point3 quantilePt;
 
     int referenced(0);
     int unreferenced(0);
     for (const auto file : input) {
-        if (analyzeInput(file, geogcs, extents /*, quantilePt, verbose */)) {
+        if (analyzeInput(file, geogcs, extents, quantilePt, verbose )) {
             ++referenced;
         } else {
             ++unreferenced;
@@ -1374,10 +1451,13 @@ int Vef2Vts::analyze(const po::variables_map &vars)
                 std::cout << "geogcs: " << *geogcs << std::endl;
                 std::cout << "center: " << std::fixed << std::setprecision(9)
                           << center(0) << " " << center(1) << std::endl;
-//                if (verbose.level >= 2) {
-//                    std::cout << "elevation_pt: " << std::fixed << std::setprecision(9)
-//                              << e(0) << " " << e(1) << " " << e(2) << std::endl;
-//                }
+                if (verbose.level >= 2) {
+
+                    std::cout << "elevation_pt: " << std::fixed << std::setprecision(9)
+                              << quantilePt(0) << " "
+                              << quantilePt(1) << " "
+                              << quantilePt(2) << std::endl;
+                }
             }
         }
     } else {
