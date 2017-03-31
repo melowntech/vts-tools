@@ -49,7 +49,14 @@ buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
 buildsys_binary(tmptscp)
 
 # ------------------------------------------------------------------------
+
+
+
+
+
+
+# ------------------------------------------------------------------------
 # installation
 
-install(TARGETS  vef2vts
+install(TARGETS  vef2vts analyzer
   RUNTIME DESTINATION bin COMPONENT vts-tools)
