@@ -28,8 +28,6 @@
 #include "vts-libs/vts/ntgenerator.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 
-
-
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -51,62 +49,6 @@ namespace ublas = boost::numeric::ublas;
 namespace {
 
 typedef vts::opencv::HybridAtlas HybridAtlas;
-
-math::Point3 point3(const aiVector3D &vec)
-{
-    return {vec.x, vec.y, vec.z};
-}
-
-// io support
-
-const aiScene* readScene(Assimp::Importer &imp
-                         , const roarchive::RoArchive &archive
-                         , const fs::path &path
-                         , unsigned int flags)
-{
-    // if (archive.directio()) {
-    //     return imp.ReadFile(archive.path(path).string(), flags);
-    // }
-
-    const auto buf(archive.istream(path)->read());
-
-    const auto *scene
-        (imp.ReadFileFromMemory(buf.data(), buf.size(), flags));
-                                // , path.extension().c_str()));
-    if (!scene) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading scene " << path
-            << "( " << imp.GetErrorString() << " ).";
-    }
-
-    return scene;
-}
-
-cv::Mat readTexture(const roarchive::RoArchive &archive, const fs::path &path
-                    , bool useEmpty = false)
-{
-    cv::Mat texture;
-    // if (archive.directio()) {
-    //     texture = cv::imread(archive.path(path).string(), CV_LOAD_IMAGE_COLOR);
-    // } else {
-        const auto buf(archive.istream(path)->read());
-        texture = cv::imdecode(buf, CV_LOAD_IMAGE_COLOR);
-    // }
-
-    if (texture.data) { return texture; }
-
-    if (!useEmpty) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading texture from " << path << ".";
-    }
-
-    LOG(warn3)
-        << "Error loading image " << path << "; using empty texture.";
-    texture.create(64, 64, CV_8UC3);
-    texture = cv::Scalar(255, 255, 255);
-
-    return texture;
-}
 
 //// utility main //////////////////////////////////////////////////////////////
 
@@ -292,7 +234,7 @@ void Model::load(const roarchive::RoArchive &archive
     LOG(info2) << "Loading model " << id << " (" << path << ").";
 
     Assimp::Importer imp;
-    const auto &scene(readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto &scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     // TODO: error checking
 
@@ -303,7 +245,7 @@ void Model::load(const roarchive::RoArchive &archive
         aiMesh *aimesh = scene->mMeshes[m];
         for (unsigned i = 0; i < aimesh->mNumVertices; i++)
         {
-            math::Point3 pt(origin + point3(aimesh->mVertices[i]));
+            math::Point3 pt(origin + lt::point3(aimesh->mVertices[i]));
             submesh.vertices.push_back(pt);
 
             const aiVector3D &tc(aimesh->mTextureCoords[0][i]);
@@ -325,7 +267,7 @@ void Model::load(const roarchive::RoArchive &archive
 
         fs::path texPath(path.parent_path() / textureFile(scene, aimesh, 0));
         LOG(info2) << "Loading " << texPath;
-        atlas.add(readTexture(archive, texPath, true));
+        atlas.add(lt::readTexture(archive, texPath, true));
     }
 }
 
@@ -607,7 +549,7 @@ int imageArea(const roarchive::RoArchive &archive, const fs::path &path)
     }
 
     // fallback: do load the image
-    auto img(readTexture(archive, path));
+    auto img(lt::readTexture(archive, path));
 
     return img.rows * img.cols;
 }
@@ -652,7 +594,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
     fs::path path(tile.node->modelPath);
 
     Assimp::Importer imp;
-    const auto *scene(readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto *scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     tile.extents = math::Extents2(math::InvalidExtents{});
     tile.sdsArea = 0.0;
@@ -665,7 +607,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
         math::Points3d physPts(mesh->mNumVertices);
         for (unsigned i = 0; i < mesh->mNumVertices; i++)
         {
-            math::Point3 pt(tile.node->origin + point3(mesh->mVertices[i]));
+            math::Point3 pt(tile.node->origin + lt::point3(mesh->mVertices[i]));
             math::update(tile.extents, pt);
             physPts[i] = csconv(pt);
         }
@@ -695,9 +637,9 @@ void calcModelExtents(const roarchive::RoArchive &archive
 
             tile.sdsArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
 
-            math::Point3 ta(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
-            math::Point3 tb(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
-            math::Point3 tc(point3(mesh->mTextureCoords[0][face.mIndices[2]]));
+            math::Point3 ta(lt::point3(mesh->mTextureCoords[0][face.mIndices[0]]));
+            math::Point3 tb(lt::point3(mesh->mTextureCoords[0][face.mIndices[1]]));
+            math::Point3 tc(lt::point3(mesh->mTextureCoords[0][face.mIndices[2]]));
 
             tile.texArea += 0.5*norm_2(math::crossProduct(tb - ta, tc - ta))
                                *imgArea;
