@@ -50,13 +50,21 @@ buildsys_binary(tmptscp)
 
 # ------------------------------------------------------------------------
 
+define_module(BINARY analysis3d
+        DEPENDS vtstools ${common_DEPENDS} tinyxml2>=1.0
+        ASSIMP vef>=1.2
+        )
 
 
+add_executable(analysis3d ${analysis3d_SOURCES})
 
+target_link_libraries(analysis3d ${MODULE_LIBRARIES})
 
+buildsys_target_compile_definitions(analysis3d ${MODULE_DEFINITIONS})
+buildsys_binary(analysis3d)
 
 # ------------------------------------------------------------------------
 # installation
 
-install(TARGETS  vef2vts analyzer
+install(TARGETS  vef2vts analysis3d
   RUNTIME DESTINATION bin COMPONENT vts-tools)
