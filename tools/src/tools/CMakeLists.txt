@@ -51,9 +51,10 @@ buildsys_binary(tmptscp)
 # ------------------------------------------------------------------------
 
 define_module(BINARY analysis3d
-        DEPENDS vtstools ${common_DEPENDS} tinyxml2>=1.0
-        ASSIMP vef>=1.2
-        )
+  DEPENDS vtstools ${common_DEPENDS}
+  vef>=1.2
+  TINYXML2 ASSIMP
+  )
 
 
 add_executable(analysis3d ${analysis3d_SOURCES})
