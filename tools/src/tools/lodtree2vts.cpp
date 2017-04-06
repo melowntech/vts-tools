@@ -36,6 +36,8 @@
 
 #include <opencv2/highgui/highgui.hpp>
 
+#include "lodtreefile.hpp"
+
 #include "./tilemapping.hpp"
 #include "./importutil.hpp"
 
@@ -44,238 +46,17 @@ namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
 namespace tools = vtslibs::vts::tools;
 namespace po = boost::program_options;
-namespace fs = boost::filesystem;
 namespace ublas = boost::numeric::ublas;
-namespace xml = tinyxml2;
 
 namespace {
 
-const std::string LODTreeExport("LODTreeExport.xml");
-
 typedef vts::opencv::HybridAtlas HybridAtlas;
-
-math::Point3 point3(const aiVector3D &vec)
-{
-    return {vec.x, vec.y, vec.z};
-}
-
-// io support
-
-xml::XMLError readXml(const roarchive::RoArchive &archive
-                      , const fs::path &path, xml::XMLDocument &doc)
-{
-    // if (archive.directio()) {
-    //     return doc.LoadFile(archive.path(path).c_str());
-    // }
-
-    const auto buf(archive.istream(path)->read());
-    return doc.Parse(buf.data(), buf.size());
-}
-
-
-const aiScene* readScene(Assimp::Importer &imp
-                         , const roarchive::RoArchive &archive
-                         , const fs::path &path
-                         , unsigned int flags)
-{
-    // if (archive.directio()) {
-    //     return imp.ReadFile(archive.path(path).string(), flags);
-    // }
-
-    const auto buf(archive.istream(path)->read());
-
-    const auto *scene
-        (imp.ReadFileFromMemory(buf.data(), buf.size(), flags));
-                                // , path.extension().c_str()));
-    if (!scene) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading scene " << path
-            << "( " << imp.GetErrorString() << " ).";
-    }
-
-    return scene;
-}
-
-cv::Mat readTexture(const roarchive::RoArchive &archive, const fs::path &path
-                    , bool useEmpty = false)
-{
-    cv::Mat texture;
-    // if (archive.directio()) {
-    //     texture = cv::imread(archive.path(path).string(), CV_LOAD_IMAGE_COLOR);
-    // } else {
-        const auto buf(archive.istream(path)->read());
-        texture = cv::imdecode(buf, CV_LOAD_IMAGE_COLOR);
-    // }
-
-    if (texture.data) { return texture; }
-
-    if (!useEmpty) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading texture from " << path << ".";
-    }
-
-    LOG(warn3)
-        << "Error loading image " << path << "; using empty texture.";
-    texture.create(64, 64, CV_8UC3);
-    texture = cv::Scalar(255, 255, 255);
-
-    return texture;
-}
-
-//// LodTreeExport.xml parse ///////////////////////////////////////////////////
-
-struct LodTreeNode
-{
-    double radius, minRange;
-    math::Point3 origin;
-    fs::path modelPath;
-    std::vector<LodTreeNode> children;
-
-    LodTreeNode(xml::XMLElement *elem, const fs::path &dir,
-                const math::Point3 &rootOrigin);
-};
-
-struct LodTreeExport
-{
-    std::string srs;
-    math::Point3 origin;
-    std::vector<LodTreeNode> blocks;
-
-    LodTreeExport(const roarchive::RoArchive &archive
-                  , const math::Point3 &offset);
-};
-
-
-xml::XMLElement* getElement(xml::XMLNode *node, const char* elemName)
-{
-    xml::XMLElement* elem = node->FirstChildElement(elemName);
-    if (!elem) {
-        LOGTHROW(err3, std::runtime_error)
-            << "XML element \"" << elemName << "\" not found.";
-    }
-    return elem;
-}
-
-void errorAttrNotFound(xml::XMLElement *elem, const char* attrName)
-{
-    LOGTHROW(err3, std::runtime_error)
-        << "XML attribute \"" << attrName
-        << "\" not found in element \"" << elem->Name() << "\".";
-}
-
-const char* getTextAttr(xml::XMLElement *elem, const char* attrName)
-{
-    const char* text = elem->Attribute(attrName);
-    if (!text) {
-        errorAttrNotFound(elem, attrName);
-    }
-    return text;
-}
-
-double getDoubleAttr(xml::XMLElement *elem, const char* attrName)
-{
-    double a;
-    if (elem->QueryDoubleAttribute(attrName, &a) == xml::XML_NO_ATTRIBUTE) {
-        errorAttrNotFound(elem, attrName);
-    }
-    return a;
-}
-
-xml::XMLElement* loadLodTreeXml(const roarchive::RoArchive &archive
-                                , const fs::path &fname
-                                , xml::XMLDocument &doc)
-{
-    auto err = readXml(archive, fname, doc);
-    if (err != xml::XML_SUCCESS) {
-        LOGTHROW(err3, std::runtime_error)
-            << "Error loading " << fname << ": " << doc.ErrorName();
-    }
-
-    auto *root = getElement(&doc, "LODTreeExport");
-
-    double version = getDoubleAttr(root, "version");
-    if (version > 1.1 + 1e-12) {
-        LOGTHROW(err3, std::runtime_error)
-            << fname << ": unsupported format version (" << version << ").";
-    }
-
-    return root;
-}
-
-LodTreeNode::LodTreeNode(tinyxml2::XMLElement *node, const fs::path &dir,
-                         const math::Point3 &rootOrigin)
-{
-    int ok = xml::XML_SUCCESS;
-    if (getElement(node, "Radius")->QueryDoubleText(&radius) != ok ||
-        getElement(node, "MinRange")->QueryDoubleText(&minRange) != ok)
-    {
-        LOGTHROW(err3, std::runtime_error) << "Error reading node data";
-    }
-
-    auto *ctr = getElement(node, "Center");
-    math::Point3 center(getDoubleAttr(ctr, "x"),
-                        getDoubleAttr(ctr, "y"),
-                        getDoubleAttr(ctr, "z"));
-    origin = rootOrigin + center;
-
-    auto* mpath = node->FirstChildElement("ModelPath");
-    if (mpath) {
-        modelPath = dir / mpath->GetText();
-    }
-
-    // load all children
-    std::string strNode("Node");
-    for (auto *elem = node->FirstChildElement();
-         elem;
-         elem = elem->NextSiblingElement())
-    {
-        if (strNode == elem->Name())
-        {
-            children.emplace_back(elem, dir, rootOrigin);
-        }
-    }
-}
-
-LodTreeExport::LodTreeExport(const roarchive::RoArchive &archive
-                             , const math::Point3 &offset)
-{
-    xml::XMLDocument doc;
-    auto *root = loadLodTreeXml(archive, LODTreeExport, doc);
-
-    srs = getElement(root, "SRS")->GetText();
-
-    auto *local = getElement(root, "Local");
-    origin(0) = getDoubleAttr(local, "x");
-    origin(1) = getDoubleAttr(local, "y");
-    origin(2) = getDoubleAttr(local, "z");
-    origin += offset;
-
-    // load all blocks ("Tiles")
-    std::string strTile("Tile");
-    for (auto *elem = root->FirstChildElement();
-         elem;
-         elem = elem->NextSiblingElement())
-    {
-        if (strTile == elem->Name())
-        {
-            fs::path path(getTextAttr(elem, "path"));
-            LOG(info3) << "Parsing block " << path << ".";
-
-            xml::XMLDocument tileDoc;
-            auto *tileRoot = loadLodTreeXml(archive, path, tileDoc);
-            auto *rootNode = getElement(tileRoot, "Tile");
-
-            blocks.emplace_back(rootNode, path.parent_path(), origin);
-        }
-    }
-}
-
 
 //// utility main //////////////////////////////////////////////////////////////
 
 struct InputTile : public tools::InputTile
 {
-    const LodTreeNode *node;
+    const lt::LodTreeNode *node;
     const geo::SrsDefinition *srs;
 
     math::Extents2 extents;
@@ -286,7 +67,7 @@ struct InputTile : public tools::InputTile
     virtual math::Points2 projectCorners(
             const vr::ReferenceFrame::Division::Node &node) const;
 
-    InputTile(int id, int depth, const LodTreeNode *node,
+    InputTile(int id, int depth, const lt::LodTreeNode *node,
               const geo::SrsDefinition &srs)
         : tools::InputTile(id, depth), node(node), srs(&srs)
     {}
@@ -305,10 +86,12 @@ struct Config
     double dtmExtractionRadius;
     double offsetX, offsetY, offsetZ;
 
+    double zShift;
+
     Config()
         : textureQuality(85), maxLevel(-1)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
-        , offsetX(0.), offsetY(0.), offsetZ(0.)
+        , offsetX(0.), offsetY(0.), offsetZ(0.), zShift(0.0)
     {}
 };
 
@@ -329,15 +112,10 @@ private:
     virtual void configure(const po::variables_map &vars)
         UTILITY_OVERRIDE;
 
-    virtual void preNotifyHook(const po::variables_map &vars)
-        UTILITY_OVERRIDE;
-
     virtual bool help(std::ostream &out, const std::string &what) const
         UTILITY_OVERRIDE;
 
     virtual int run() UTILITY_OVERRIDE;
-
-    int analyze(const po::variables_map &vars);
 
     fs::path input_;
     fs::path output_;
@@ -353,7 +131,6 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 {
     vr::registryConfiguration(cmdline, vr::defaultPath());
     vr::creditsConfiguration(cmdline);
-    service::verbosityConfiguration(cmdline);
 
     cmdline.add_options()
         ("input", po::value(&input_)->required()
@@ -397,21 +174,17 @@ void LodTree2Vts::configuration(po::options_description &cmdline
         ("offsetZ", po::value(&config_.offsetZ)->default_value(config_.offsetZ),
          "Force Z shift of the model.")
 
-        ("analyzeOnly"
-                , "If set, do not process the file, only analyze it.")
+        ("zShift", po::value(&config_.zShift)
+         ->default_value(config_.zShift)->required()
+         , "Manual height adjustment (value is "
+         "added to z component of all vertices).")
+
         ;
 
     pd.add("input", 1);
     pd.add("output", 1);
 
     (void) config;
-}
-
-void LodTree2Vts::preNotifyHook(const po::variables_map &vars)
-{
-    if (vars.count("analyzeOnly")) {
-        service::immediateExit(analyze(vars));
-    }
 }
 
 void LodTree2Vts::configure(const po::variables_map &vars)
@@ -470,7 +243,7 @@ void Model::load(const roarchive::RoArchive &archive
     LOG(info2) << "Loading model " << id << " (" << path << ").";
 
     Assimp::Importer imp;
-    const auto &scene(readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto &scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     // TODO: error checking
 
@@ -481,7 +254,7 @@ void Model::load(const roarchive::RoArchive &archive
         aiMesh *aimesh = scene->mMeshes[m];
         for (unsigned i = 0; i < aimesh->mNumVertices; i++)
         {
-            math::Point3 pt(origin + point3(aimesh->mVertices[i]));
+            math::Point3 pt(origin + lt::point3(aimesh->mVertices[i]));
             submesh.vertices.push_back(pt);
 
             const aiVector3D &tc(aimesh->mTextureCoords[0][i]);
@@ -503,7 +276,7 @@ void Model::load(const roarchive::RoArchive &archive
 
         fs::path texPath(path.parent_path() / textureFile(scene, aimesh, 0));
         LOG(info2) << "Loading " << texPath;
-        atlas.add(readTexture(archive, texPath, true));
+        atlas.add(lt::readTexture(archive, texPath, true));
     }
 }
 
@@ -696,6 +469,11 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
             vts::SubMesh copy(submesh);
             tools::warpInPlace(src2DstSds, copy);
 
+            // apply zShift
+            if (config_.zShift) {
+                tools::shiftInPlace(copy, config_.zShift);
+            }
+
             // ...where we clip it
             vts::SubMesh clipped(vts::clip(copy, clipExtents));
 
@@ -758,7 +536,7 @@ void Encoder::finish(vts::TileSet &ts)
 
 //// main //////////////////////////////////////////////////////////////////////
 
-void collectInputTiles(const LodTreeNode &node, unsigned depth,
+void collectInputTiles(const lt::LodTreeNode &node, unsigned depth,
                        unsigned maxDepth, InputTile::list &list,
                        const geo::SrsDefinition &srs)
 {
@@ -785,7 +563,7 @@ int imageArea(const roarchive::RoArchive &archive, const fs::path &path)
     }
 
     // fallback: do load the image
-    auto img(readTexture(archive, path));
+    auto img(lt::readTexture(archive, path));
 
     return img.rows * img.cols;
 }
@@ -830,7 +608,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
     fs::path path(tile.node->modelPath);
 
     Assimp::Importer imp;
-    const auto *scene(readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto *scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     tile.extents = math::Extents2(math::InvalidExtents{});
     tile.sdsArea = 0.0;
@@ -843,7 +621,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
         math::Points3d physPts(mesh->mNumVertices);
         for (unsigned i = 0; i < mesh->mNumVertices; i++)
         {
-            math::Point3 pt(tile.node->origin + point3(mesh->mVertices[i]));
+            math::Point3 pt(tile.node->origin + lt::point3(mesh->mVertices[i]));
             math::update(tile.extents, pt);
             physPts[i] = csconv(pt);
         }
@@ -873,9 +651,9 @@ void calcModelExtents(const roarchive::RoArchive &archive
 
             tile.sdsArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
 
-            math::Point3 ta(point3(mesh->mTextureCoords[0][face.mIndices[0]]));
-            math::Point3 tb(point3(mesh->mTextureCoords[0][face.mIndices[1]]));
-            math::Point3 tc(point3(mesh->mTextureCoords[0][face.mIndices[2]]));
+            math::Point3 ta(lt::point3(mesh->mTextureCoords[0][face.mIndices[0]]));
+            math::Point3 tb(lt::point3(mesh->mTextureCoords[0][face.mIndices[1]]));
+            math::Point3 tc(lt::point3(mesh->mTextureCoords[0][face.mIndices[2]]));
 
             tile.texArea += 0.5*norm_2(math::crossProduct(tb - ta, tc - ta))
                                *imgArea;
@@ -886,7 +664,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
 
 int LodTree2Vts::run()
 {
-    roarchive::RoArchive archive(input_, LODTreeExport);
+    roarchive::RoArchive archive(input_, lt::mainXmlFileName);
 
     math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
     if (norm_2(offset) > 0.) {
@@ -894,7 +672,7 @@ int LodTree2Vts::run()
     }
 
     // parse the XMLs
-    LodTreeExport lte(archive, offset);
+    lt::LodTreeExport lte(archive, offset);
 
     lte.origin += offset;
 
@@ -949,63 +727,6 @@ int LodTree2Vts::run()
     // all done
     LOG(info4) << "All done.";
     return EXIT_SUCCESS;
-}
-
-
-int LodTree2Vts::analyze(const po::variables_map &vars)
-{
-    // process configuration
-    vr::registryConfigure(vars);
-    auto verbose(service::verbosityConfigure(vars));
-
-    if (!vars.count("input")) {
-        throw po::required_option("input");
-    }
-    const auto input(vars["input"].as<fs::path>());
-
-    std::cout << "georeferenced: true" << std::endl;
-
-    boost::optional<geo::SrsDefinition> geogcs;
-    if (verbose) {
-        if (!vars.count("referenceFrame")) {
-            throw po::required_option("referenceFrame");
-        }
-        const auto referenceFrameId(vars["referenceFrame"].as<std::string>());
-
-        // get reference frame
-        const auto &referenceFrame(vr::system.referenceFrames(referenceFrameId));
-
-        // get geographic system from physical SRS
-        geogcs = vr::system.srs(referenceFrame.model.navigationSrs)
-                .srsDef.geographic();
-        geogcs = geo::merge(*geogcs, vr::system.srs(referenceFrame.model.publicSrs)
-                .srsDef);
-
-        roarchive::RoArchive archive(input, LODTreeExport);
-
-        math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
-        if (norm_2(offset) > 0.) {
-            LOG(info4) << "Using offset " << offset;
-        }
-
-        // parse the XMLs
-        LodTreeExport lte(archive, offset);
-        lte.origin += offset;
-
-        // TODO: error checking (empty?)
-        geo::SrsDefinition inputSrs(geo::SrsDefinition::fromString(lte.srs));
-        geo::CsConvertor csconv(inputSrs, *geogcs);
-
-        math::Point3 c(csconv(lte.origin));
-        std::cout << "geogcs: " << *geogcs << std::endl;
-        std::cout << "center: " << std::fixed << std::setprecision(9)
-                  << c(0) << " " << c(1) << std::endl;
-
-        // TODO add quantile measurement
-
-    }
-    return 0;
-
 }
 
 } // namespace
