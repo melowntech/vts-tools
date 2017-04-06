@@ -84,12 +84,15 @@ struct Config {
     bool resume;
     bool keepTmpset;
 
+    double zShift;
+
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , forceWatertight(false), clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
         , sigmaEditCoef(1.5), resume(false), keepTmpset(false)
+        , zShift(0.0)
     {}
 };
 
@@ -196,6 +199,11 @@ void Vef2Vts::configuration(po::options_description &cmdline
          "temporary tileset inside generated tileset. Use with caution.")
         ("keepTmpset"
          , "Keep temporary tileset intact on exit.")
+
+        ("zShift", po::value(&config_.zShift)
+         ->default_value(config_.zShift)->required()
+         , "Manual height adjustment (value is "
+         "added to z component of all vertices).")
 
         ;
 
@@ -929,6 +937,10 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
             for (const auto &v : sm.vertices) {
                 try {
                     projected.push_back(conv(v));
+                    // apply zShift
+                    if(config_.zShift) {
+                        projected.back()(2) += config_.zShift;
+                    }
                     ++ivalid;
                 } catch (std::exception) {
                     // failed to convert vertex, mask it and skip
