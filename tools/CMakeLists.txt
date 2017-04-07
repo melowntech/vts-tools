@@ -42,6 +42,10 @@ include_directories(${LIBPROC_INCLUDE_DIR})
 find_package(TinyXML2 REQUIRED)
 include_directories(${TINYXML2_INCLUDE_DIR})
 
+# Protobuf: needed by gdal drivers
+find_package(Protobuf REQUIRED)
+include_directories(${PROTOBUF_INCLUDE_DIRS})
+
 # dependencies
 add_subdirectory(src/dbglog)
 add_subdirectory(src/utility)
@@ -51,6 +55,7 @@ add_subdirectory(src/imgproc)
 add_subdirectory(src/jsoncpp)
 add_subdirectory(src/service)
 add_subdirectory(src/geo)
+add_subdirectory(src/gdal-drivers)
 add_subdirectory(src/half)
 add_subdirectory(src/roarchive)
 add_subdirectory(src/http)
