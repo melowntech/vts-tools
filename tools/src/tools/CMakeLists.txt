@@ -19,19 +19,6 @@ target_link_libraries(vtstools ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vtstools ${MODULE_DEFINITIONS})
 
 # ------------------------------------------------------------------------
-
-
-
-
-
-# ------------------------------------------------------------------------
-
-
-
-# ------------------------------------------------------------------------
-
-
-# ------------------------------------------------------------------------
 # vef2vts tool
 define_module(BINARY vef2vts
   DEPENDS vtstools ${common_DEPENDS} vef>=1.2)
@@ -49,14 +36,6 @@ buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
 buildsys_binary(tmptscp)
 
 # ------------------------------------------------------------------------
-
-
-
-
-
-
-# ------------------------------------------------------------------------
 # installation
-
-install(TARGETS  vef2vts 
+install(TARGETS vef2vts
   RUNTIME DESTINATION bin COMPONENT vts-tools)

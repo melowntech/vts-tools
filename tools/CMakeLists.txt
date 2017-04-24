@@ -1,9 +1,9 @@
 # bootstrap build system
 cmake_minimum_required(VERSION 2.8.11)
+project(vts-tools)
+# by default, this is OSS build (can be overrided by customer machinery)
+set(BUILDSYS_DEFAULT_CUSTOMER_NAME oss)
 include(buildsys/cmake/buildsys.cmake)
-
-# project
-setup_project(vts-tools "${BUILDSYS_PACKAGE_VERSION}")
 
 enable_OpenMP()
 
