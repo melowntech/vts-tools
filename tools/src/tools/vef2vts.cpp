@@ -76,7 +76,7 @@
 #include "vts-libs/vts/opencv/atlas.hpp"
 #include "vts-libs/vts/ntgenerator.hpp"
 
-#include "vef/vef.hpp"
+#include "vef/reader.hpp"
 
 #include "./tmptileset.hpp"
 #include "./repackatlas.hpp"
