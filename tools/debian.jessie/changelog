@@ -1,0 +1,5 @@
+vts-tools (1.0) melown-jessie; urgency=low
+
+  * Initial build for debian jessie.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 9 May 2017 15:21:00 +0200
