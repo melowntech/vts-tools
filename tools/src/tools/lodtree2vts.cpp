@@ -27,6 +27,7 @@
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts/ntgenerator.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
+#include "vts-libs/tools/progress.hpp"
 
 #include <tinyxml2.h>
 
@@ -44,6 +45,7 @@
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
+namespace vt = vtslibs::tools;
 namespace tools = vtslibs::vts::tools;
 namespace po = boost::program_options;
 namespace ublas = boost::numeric::ublas;
@@ -123,6 +125,7 @@ private:
     vts::CreateMode createMode_;
 
     Config config_;
+    vt::ExternalProgress::Config epConfig_;
 };
 
 void LodTree2Vts::configuration(po::options_description &cmdline
@@ -181,6 +184,8 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
         ;
 
+    vt::progressConfiguration(config);
+
     pd.add("input", 1);
     pd.add("output", 1);
 
@@ -195,6 +200,8 @@ void LodTree2Vts::configure(const po::variables_map &vars)
     createMode_ = (vars.count("overwrite")
                    ? vts::CreateMode::overwrite
                    : vts::CreateMode::failIfExists);
+
+    epConfig_ = vt::configureProgress(vars);
 }
 
 bool LodTree2Vts::help(std::ostream &out, const std::string &what) const
@@ -360,6 +367,14 @@ ModelCache::~ModelCache()
     LOG(info2) << "Tile average load count: " << sum / input_.size();
 }
 
+/**
+ * External Progress Phases:
+ *
+ *  * analyze
+ *  * generate tiles
+ *  * generate nt tiles
+ */
+const vt::ExternalProgress::Weights weights{10, 100, 20};
 
 //// encoder ///////////////////////////////////////////////////////////////////
 
@@ -373,14 +388,17 @@ public:
             , const geo::SrsDefinition &inputSrs
             , const tools::NavTileParams &nt
             , const std::string &ntsds
-            , const Config &config)
+            , const Config &config
+            , vt::ExternalProgress::Config &&epConfig)
         : vts::Encoder(path, properties, mode)
         , archive_(archive)
         , inputTiles_(inputTiles)
         , inputSrs_(inputSrs)
         , nt_(nt)
         , config_(config)
-        , tileMap_(inputTiles, referenceFrame(), 1.0/*config.maxClipMargin()*/)
+        , progress_(std::move(epConfig), weights)
+        , tileMap_(inputTiles, referenceFrame(), 1.0/*config.maxClipMargin()*/
+                   , progress_)
         , modelCache_(archive_, inputTiles, 128)
         , ntg_(&referenceFrame())
     {
@@ -388,7 +406,16 @@ public:
             (ntsds, nt.lodRange, nt.sourceLodPixelSize);
 
         setConstraints(Constraints().setValidTree(tileMap_.validTree()));
-        setEstimatedTileCount(tileMap_.size());
+        auto expected(tileMap_.expectedCount());
+        setEstimatedTileCount(expected);
+
+        // next phase
+        progress_.expect(expected);
+    }
+
+    ~Encoder() {
+        // all phases done
+        progress_.done();
     }
 
 private:
@@ -407,6 +434,7 @@ private:
     const geo::SrsDefinition &inputSrs_;
     const tools::NavTileParams &nt_;
     const Config config_;
+    vt::ExternalProgress progress_;
 
     tools::TileMapping tileMap_;
     ModelCache modelCache_;
@@ -420,6 +448,10 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     // query which source models transform to the destination tileId
     const auto &srcIds(tileMap_.source(tileId));
     if (srcIds.empty()) {
+        if (tileMap_.expected(tileId)) {
+            ++progress_;
+            updateEstimatedTileCount(-1);
+        }
         return TileResult::Result::noDataYet;
     }
 
@@ -497,7 +529,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     }
 
     if (mesh.empty()) {
-        // no mesh
+        // no mesh -> no tile
+        ++progress_;
+        updateEstimatedTileCount(-1);
         return TileResult::Result::noDataYet;
     }
 
@@ -519,19 +553,18 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
         tile.atlas.reset();
     }
 
-    // TODO: add external texture coordinates
-
     // set credits
     tile.credits = config_.credits;
 
     // done:
+    ++progress_;
     return result;
 }
 
 void Encoder::finish(vts::TileSet &ts)
 {
     // generate navtiles and surrogates
-    ntg_.generate(ts, config_.dtmExtractionRadius);
+    ntg_.generate(ts, config_.dtmExtractionRadius, progress_);
 }
 
 //// main //////////////////////////////////////////////////////////////////////
@@ -719,7 +752,8 @@ int LodTree2Vts::run()
     // run the encoder
     LOG(info4) << "Building tile mapping.";
     Encoder enc(archive, output_, properties, createMode_, inputTiles
-                , inputSrs, ntParams, sdsNode.srs, config_);
+                , inputSrs, ntParams, sdsNode.srs, config_
+                , std::move(epConfig_));
 
     LOG(info4) << "Encoding VTS tiles.";
     enc.run();
