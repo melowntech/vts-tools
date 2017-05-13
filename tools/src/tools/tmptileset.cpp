@@ -24,6 +24,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <numeric>
+
 #include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
 
