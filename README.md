@@ -99,13 +99,21 @@ git clone --recursive https://github.com/Melown/vts-tools.git
 parameter, you should probably delete the `vts-tools` directory and clone
 again. The build will not work otherwise.
 
-### Build
+
+### Configure and build
 
 For building VTS-Tools, you just have to use ``make``
 
 ```
 cd tools
 make -j4 # to compile in 4 threads
+```
+
+Default target location (for later `make install`) is `/usr/local/` directory.
+You can set the `CMAKE_INSTALL_PREFIX` variable, to change it:
+
+```
+make set-variable VARIABLE=CMAKE_INSTALL_PREFIX=/install/prefix
 ```
 
 You should see compilation progress. Depends, how many threads you allowed for
@@ -115,9 +123,22 @@ hour of compilation time.
 The binaries are then stored in `bin` directory. Development libraries are
 stored in `lib` directory.
 
+### Installing
+
+You should be able to call `make install`, which will install to either defaul
+location `/usr/local/` or to directory defined previously by the
+`CMAKE_INSTALL_PREFIX` variable (see previous part).
+
+When you specify the `DESTDIR` variable, resulting files will be saved in
+`$DESTDIR/$CMAKE_INSTALL_PREFIX` directory (this is useful for packaging), e.g.
+
+```
+make install DESTDIR=/home/user/tmp/
+```
+
 ## Install from Melown repository
 
-Yes, we [are working on it](https://github.com/Melown/vts-tools/issues/3) ...
+Yes, we [are working on it](https://github.com/Melown/vts-mapproxy/issues/3) ...
 but till we do, you have to compile VTS-Tools manually. 
 
 ## How to contribute
