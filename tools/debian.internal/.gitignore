@@ -1,0 +1,5 @@
+ctt-vts-tools
+ctt-vts-tools-dbg
+*.debhelper*
+*.substvars
+files
