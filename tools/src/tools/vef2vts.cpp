@@ -1,29 +1,3 @@
-/**
- * Copyright (c) 2017 Melown Technologies SE
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * *  Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- *
- * *  Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include <cstdlib>
 #include <string>
 #include <iostream>
@@ -43,8 +17,6 @@
 #include "utility/gccversion.hpp"
 #include "utility/progress.hpp"
 #include "utility/streams.hpp"
-#include "utility/openmp.hpp"
-#include "utility/progress.hpp"
 #include "utility/openmp.hpp"
 #include "utility/limits.hpp"
 #include "utility/binaryio.hpp"
@@ -75,6 +47,7 @@
 #include "vts-libs/vts/math.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 #include "vts-libs/vts/ntgenerator.hpp"
+#include "vts-libs/tools/progress.hpp"
 
 #include "vef/reader.hpp"
 
@@ -89,6 +62,7 @@ namespace ublas = boost::numeric::ublas;
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
+namespace vt = vtslibs::tools;
 namespace tools = vtslibs::vts::tools;
 
 namespace {
@@ -151,6 +125,7 @@ private:
     vts::CreateMode createMode_;
 
     Config config_;
+    vt::ExternalProgress::Config epConfig_;
 };
 
 void Vef2Vts::configuration(po::options_description &cmdline
@@ -233,6 +208,8 @@ void Vef2Vts::configuration(po::options_description &cmdline
 
         ;
 
+    vt::progressConfiguration(config);
+
     pd
         .add("output", 1)
         .add("input", -1);
@@ -260,6 +237,7 @@ void Vef2Vts::configure(const po::variables_map &vars)
 
     config_.resume = vars.count("resume");
     config_.keepTmpset = vars.count("keepTmpset");
+    epConfig_ = vt::configureProgress(vars);
 }
 
 bool Vef2Vts::help(std::ostream &out, const std::string &what) const
@@ -627,10 +605,22 @@ public:
     Analyzer(const std::vector<vef::Archive> &input
              , const vr::ReferenceFrame &rf
              , const Config &config
-             , vts::NtGenerator &ntg)
-        : rf_(rf), config_(config)
+             , vts::NtGenerator &ntg
+             , vt::ExternalProgress &progress)
+        : rf_(rf), config_(config), progress_(progress)
         , nodes_(vts::NodeInfo::nodes(rf_))
     {
+        // calculate number of reported events
+        // 1 event per mesh read, 1 event per mesh analyze
+        progress.expect([&]() -> std::size_t
+        {
+            std::size_t events(0);
+            for (const auto &archive : input) {
+                events += archive.manifest().windows.size();
+            }
+            return 2 * events;
+        }());
+
         Assignment::maplist assignments;
         // process all input manifests
         for (const auto &archive : input) {
@@ -681,6 +671,7 @@ private:
 
     const vr::ReferenceFrame &rf_;
     const Config &config_;
+    vt::ExternalProgress &progress_;
 
     const vts::NodeInfo::list nodes_;
     NavtileInfo::map ntMap_;
@@ -723,6 +714,9 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
         LOGTHROW(err2, std::runtime_error)
             << "Unable to load mesh from " << window.mesh.path << ".";
     }
+
+    // mesh loaded
+    ++progress_;
 
     if (loader.mesh().submeshes.size() != window.atlas.size()) {
         LOGTHROW(err2, std::runtime_error)
@@ -801,13 +795,15 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
         if (bestLod < 0) { continue; }
 
         // we have best lod for this window in this SDS node, store info
-
         UTILITY_OMP(critical)
             assignment.insert
             (Assignment::map::value_type
              (node.nodeId()
               , Assignment(node, bestLod, lodCount, computeExtents(mesh))));
     }
+
+    // mesh analyzed
+    ++progress_;
 
     // done
     return assignment;
@@ -817,10 +813,11 @@ class Cutter {
 public:
     Cutter(tools::TmpTileset &tmpset, const vef::Archive &archive
            , const vr::ReferenceFrame &rf, const Config &config
+           , vt::ExternalProgress &progress
            , const Assignment::maplist &assignments)
         : tmpset_(tmpset), archive_(archive)
         , manifest_(archive_.manifest()), rf_(rf)
-        , inputSrs_(*manifest_.srs), config_(config)
+        , inputSrs_(*manifest_.srs), config_(config), progress_(progress)
         , nodes_(vts::NodeInfo::nodes(rf_))
     {
         cut(assignments);
@@ -847,6 +844,7 @@ private:
     const vr::ReferenceFrame &rf_;
     const geo::SrsDefinition &inputSrs_;
     const Config &config_;
+    vt::ExternalProgress &progress_;
     const vts::NodeInfo::list nodes_;
 
     NavtileInfo::map ntMap_;
@@ -890,6 +888,7 @@ void Cutter::cut(const Assignment::maplist &assignments)
             std::size_t loddedWindowSize(loddedWindow.lods.size());
             for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
                 windowCut(loddedWindow.lods[ii], ii, assignment);
+                ++progress_;
             }
         }
 }
@@ -1066,22 +1065,46 @@ void cutTiles(const std::vector<vef::Archive> &input
               , tools::TmpTileset &tmpset
               , const vr::ReferenceFrame &rf
               , const Config config
-              , vts::NtGenerator &ntg)
+              , vts::NtGenerator &ntg
+              , vt::ExternalProgress &progress)
 {
     // analyze whole input
-    Analyzer analyzer(input, rf, config, ntg);
+    Analyzer analyzer(input, rf, config, ntg, progress);
     const auto &assignments(analyzer.assignments());
+
+    // cut phase
+    progress.expect([&]() -> std::size_t
+    {
+        std::size_t events(0);
+        for (const auto &archive : input) {
+            for (const auto &window : archive.manifest().windows) {
+                events += window.lods.size();
+            }
+        }
+        return events;
+    }());
 
     // cut per archive
     auto iassignments(assignments.begin());
     for (const auto &archive : input) {
-        Cutter(tmpset, archive, rf, config
+        Cutter(tmpset, archive, rf, config, progress
                , *iassignments++);
     }
 
     tmpset.flush();
     ntg.save(tmpset.root() / "navtile.info");
 }
+
+/**
+ * External Progress Phases:
+ *
+ *  * analyze
+ *  * cut
+ *  * generate tiles
+ *  * generate nt tiles
+ */
+const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
+const vt::ExternalProgress::Weights weightsResume{40, 10};
 
 class Encoder : public vts::Encoder {
 public:
@@ -1091,16 +1114,19 @@ public:
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
             , const std::vector<vef::Archive> &input
-            , const Config &config)
+            , const Config &config
+            , vt::ExternalProgress::Config &&epConfig)
         : vts::Encoder(path, properties, mode)
         , config_(config)
+        , progress_(std::move(epConfig), weightsFull)
         , tmpset_(path / "tmp")
         , ntg_(&referenceFrame())
     {
         tmpset_.keep(config.keepTmpset);
 
         // cut tiles to temporary
-        cutTiles(input, tmpset_, referenceFrame(), config_, ntg_);
+        cutTiles(input, tmpset_, referenceFrame(), config_, ntg_
+                 , progress_);
 
         prepare();
     }
@@ -1110,14 +1136,20 @@ public:
     Encoder(const boost::filesystem::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
-            , const Config &config)
+            , const Config &config
+            , vt::ExternalProgress::Config &&epConfig)
         : vts::Encoder(path, properties, mode)
         , config_(config)
+        , progress_(std::move(epConfig), weightsResume)
         , tmpset_(path / "tmp", false)
         , ntg_(&referenceFrame(), tmpset_.root() / "navtile.info")
     {
         tmpset_.keep(config.keepTmpset);
         prepare();
+    }
+
+    ~Encoder() {
+        progress_.done();
     }
 
 private:
@@ -1128,7 +1160,9 @@ private:
         validTree_.makeAbsolute().complete();
 
         setConstraints(Constraints().setValidTree(&validTree_));
-        setEstimatedTileCount(index_.count());
+        const auto count(index_.count());
+        setEstimatedTileCount(count);
+        progress_.expect(count);
     }
 
     virtual TileResult
@@ -1139,6 +1173,8 @@ private:
     virtual void finish(vts::TileSet &ts);
 
     const Config config_;
+
+    vt::ExternalProgress progress_;
 
     tools::TmpTileset tmpset_;
     vts::TileIndex index_;
@@ -1205,12 +1241,15 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     tile.credits = config_.credits;
 
     // done
+    ++progress_;
+
+    // done
     return result;
 }
 
 void Encoder::finish(vts::TileSet &ts)
 {
-    ntg_.generate(ts, config_.dtmExtractionRadius);
+    ntg_.generate(ts, config_.dtmExtractionRadius, progress_);
 }
 
 int Vef2Vts::run()
@@ -1221,7 +1260,8 @@ int Vef2Vts::run()
 
     if (config_.resume) {
         // run the encoder
-        Encoder(output_, properties, createMode_, config_).run();
+        Encoder(output_, properties, createMode_, config_
+                , std::move(epConfig_)).run();
 
         // all done
         LOG(info4) << "All done.";
@@ -1241,7 +1281,8 @@ int Vef2Vts::run()
     }
 
     // run the encoder
-    Encoder(output_, properties, createMode_, input, config_).run();
+    Encoder(output_, properties, createMode_, input, config_
+            , std::move(epConfig_)).run();
 
     // all done
     LOG(info4) << "All done.";
