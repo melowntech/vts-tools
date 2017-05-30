@@ -46,3 +46,6 @@
 [submodule "externals/vts-libs"]
 	path = externals/vts-libs
 	url = https://github.com/Melown/vts-libs.git
+[submodule "externals/libslpk"]
+	path = externals/libslpk
+	url = https://github.com/Melown/libslpk.git

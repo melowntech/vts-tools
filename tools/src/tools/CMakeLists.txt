@@ -24,15 +24,27 @@ define_module(BINARY vef2vts
 set(vef2vts_SOURCES
   vef2vts.cpp)
 
+add_executable(tmptscp tmptscp.cpp)
+target_link_libraries(tmptscp ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
+buildsys_binary(tmptscp)
+
 add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2vts ${MODULE_DEFINITIONS})
 buildsys_binary(vef2vts)
 
-add_executable(tmptscp tmptscp.cpp)
-target_link_libraries(tmptscp ${MODULE_LIBRARIES})
-buildsys_target_compile_definitions(tmptscp ${MODULE_DEFINITIONS})
-buildsys_binary(tmptscp)
+# ------------------------------------------------------------------------
+# slpk2vts tool
+define_module(BINARY slpk2vts
+  DEPENDS vtstools ${common_DEPENDS} slpk>=1.0)
+set(slpk2vts_SOURCES
+  slpk2vts.cpp)
+
+add_executable(slpk2vts slpk2vts.cpp)
+target_link_libraries(slpk2vts ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(slpk2vts ${MODULE_DEFINITIONS})
+buildsys_binary(slpk2vts)
 
 # ------------------------------------------------------------------------
 # installation

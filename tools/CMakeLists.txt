@@ -56,7 +56,10 @@ add_subdirectory(src/http)
 # vts libraries: force build and install of vts-tools
 set(vts-libs_vts-install_component vts-tools)
 add_subdirectory(src/vts-libs)
+
+# format decoding libraries
 add_subdirectory(src/vef)
+add_subdirectory(src/slpk)
 
 # tools
 add_subdirectory(src/tools)
