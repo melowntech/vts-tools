@@ -251,6 +251,8 @@ int Slpk2Vts::run()
     // open archive
     slpk::Archive input(input_);
 
+    auto root(input.loadRootNodeIndex());
+
     // all done
     LOG(info4) << "All done.";
     return EXIT_SUCCESS;
