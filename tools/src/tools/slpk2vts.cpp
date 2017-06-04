@@ -251,7 +251,19 @@ int Slpk2Vts::run()
     // open archive
     slpk::Archive input(input_);
 
-    auto root(input.loadRootNodeIndex());
+    // input.loadNodeIndex("nodes/0-0-2/");
+    auto nodes(input.loadTree());
+    for (const auto &n : nodes) {
+        LOG(info4) << n.first;
+        LOG(info4) << "    geometry:";
+        for (const auto &r : n.second.geometryData) {
+            LOG(info4) << "        " << r.href << " " << r.encoding->ext;
+        }
+        LOG(info4) << "    texture:";
+        for (const auto &r : n.second.textureData) {
+            LOG(info4) << "        " << r.href << " " << r.encoding->ext;
+        }
+    }
 
     // all done
     LOG(info4) << "All done.";
