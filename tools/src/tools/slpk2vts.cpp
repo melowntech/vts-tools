@@ -254,15 +254,18 @@ int Slpk2Vts::run()
     // input.loadNodeIndex("nodes/0-0-2/");
     auto nodes(input.loadTree());
     for (const auto &n : nodes) {
+        const auto &node(n.second);
         LOG(info4) << n.first;
         LOG(info4) << "    geometry:";
-        for (const auto &r : n.second.geometryData) {
-            LOG(info4) << "        " << r.href << " " << r.encoding->ext;
+        for (const auto &r : node.geometryData) {
+            LOG(info4) << "        " << r.href << " " << r.encoding->mime;
         }
         LOG(info4) << "    texture:";
-        for (const auto &r : n.second.textureData) {
-            LOG(info4) << "        " << r.href << " " << r.encoding->ext;
+        for (const auto &r : node.textureData) {
+            LOG(info4) << "        " << r.href << " " << r.encoding->mime;
         }
+
+        auto geometry(input.loadGeometry(node));
     }
 
     // all done
