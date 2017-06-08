@@ -52,6 +52,10 @@ public:
             : textureQuality(85), dtmExtractionRadius(40.0)
             , forceWatertight(false), resume(false), keepTmpset(false)
         {}
+
+        void configuration(boost::program_options::options_description
+                           &config);
+        void configure(const boost::program_options::variables_map &vars);
     };
 
     typedef vtslibs::tools::ExternalProgress ExternalProgress;

@@ -84,6 +84,64 @@ struct Config : tools::TmpTsEncoder::Config {
         , sigmaEditCoef(1.5)
         , zShift(0.0)
     {}
+
+    void configuration(po::options_description &config) {
+        tools::TmpTsEncoder::Config::configuration(config);
+
+        config.add_options()
+            ("tilesetId", po::value(&tilesetId)->required()
+             , "Output tileset ID.")
+
+            ("referenceFrame", po::value(&referenceFrame)->required()
+             , "Destination reference frame. Must be different from input "
+             "tileset's referenceFrame.")
+
+            ("navtileLodPixelSize"
+             , po::value(&ntLodPixelSize)
+             ->default_value(ntLodPixelSize)->required()
+             , "Navigation data are generated at first LOD (starting "
+             "from root) where pixel size (in navigation grid) is less or "
+             "equal to this value.")
+
+            ("clipMargin", po::value(&clipMargin)
+             ->default_value(clipMargin)
+             , "Margin (in fraction of tile dimensions) added to tile extents "
+             "in all 4 directions.")
+
+            ("tileExtents", po::value<vts::LodTileRange>()
+             , "Optional tile extents specidied in form lod/llx,lly:urx,ury. "
+             "When set, only tiles in that range and below are added to "
+             "the output.")
+
+            ("borderClipMargin", po::value(&borderClipMargin)
+             , "Margin (in fraction of tile dimensions) added to tile extents "
+             "where tile touches artificial border definied by tileExtents.")
+
+            ("tweak.optimalTextureSize", po::value(&optimalTextureSize)
+             ->default_value(optimalTextureSize)->required()
+             , "Size of ideal tile texture. Used to calculate fitting LOD from"
+             "mesh texel size. Do not modify.")
+
+            ("tweak.sigmaEditCoef", po::value(&sigmaEditCoef)
+             ->default_value(sigmaEditCoef)
+             , "Sigma editting coefficient. Meshes with best LOD difference "
+             "from mean best LOD lower than sigmaEditCoef * sigma are "
+             "assigned round(mean best LOD).")
+
+            ("zShift", po::value(&zShift)
+             ->default_value(zShift)->required()
+             , "Manual height adjustment (value is "
+             "added to z component of all vertices).")
+            ;
+    }
+
+    void configure(const po::variables_map &vars) {
+        tools::TmpTsEncoder::Config::configure(vars);
+
+        if (vars.count("tileExtents")) {
+            tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
+        }
+    }
 };
 
 class Slpk2Vts : public service::Cmdline
@@ -125,77 +183,14 @@ void Slpk2Vts::configuration(po::options_description &cmdline
     vr::registryConfiguration(cmdline, vr::defaultPath());
     vr::creditsConfiguration(cmdline);
 
+    config_.configuration(cmdline);
+
     cmdline.add_options()
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("input", po::value(&input_)->required()
          , "Path to input SLPK archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
-
-        ("tilesetId", po::value(&config_.tilesetId)->required()
-         , "Output tileset ID.")
-
-        ("referenceFrame", po::value(&config_.referenceFrame)->required()
-         , "Destination reference frame. Must be different from input "
-         "tileset's referenceFrame.")
-
-        ("textureQuality", po::value(&config_.textureQuality)
-         ->default_value(config_.textureQuality)->required()
-         , "Texture quality for JPEG texture encoding (0-100).")
-
-        ("navtileLodPixelSize"
-         , po::value(&config_.ntLodPixelSize)
-         ->default_value(config_.ntLodPixelSize)->required()
-         , "Navigation data are generated at first LOD (starting from root) "
-         "where pixel size (in navigation grid) is less or "
-         "equal to this value.")
-
-        ("dtmExtraction.radius"
-         , po::value(&config_.dtmExtractionRadius)
-         ->default_value(config_.dtmExtractionRadius)->required()
-         , "Radius (in meters) of DTM extraction element (in meters).")
-
-        ("force.watertight", po::value(&config_.forceWatertight)
-         ->default_value(false)->implicit_value(true)
-         , "Enforces full coverage mask to every generated tile even "
-         "when it is holey.")
-
-        ("clipMargin", po::value(&config_.clipMargin)
-         ->default_value(config_.clipMargin)
-         , "Margin (in fraction of tile dimensions) added to tile extents in "
-         "all 4 directions.")
-
-        ("tileExtents", po::value<vts::LodTileRange>()
-         , "Optional tile extents specidied in form lod/llx,lly:urx,ury. "
-         "When set, only tiles in that range and below are added to "
-         "the output.")
-
-        ("borderClipMargin", po::value(&config_.borderClipMargin)
-         , "Margin (in fraction of tile dimensions) added to tile extents "
-         "where tile touches artificial border definied by tileExtents.")
-
-        ("tweak.optimalTextureSize", po::value(&config_.optimalTextureSize)
-         ->default_value(config_.optimalTextureSize)->required()
-         , "Size of ideal tile texture. Used to calculate fitting LOD from"
-         "mesh texel size. Do not modify.")
-
-        ("tweak.sigmaEditCoef", po::value(&config_.sigmaEditCoef)
-         ->default_value(config_.sigmaEditCoef)
-         , "Sigma editting coefficient. Meshes with best LOD difference from "
-         "mean best LOD lower than sigmaEditCoef * sigma are assigned "
-         "round(mean best LOD).")
-
-        ("resume"
-         , "Resumes interrupted encoding. There must be complete (valid) "
-         "temporary tileset inside generated tileset. Use with caution.")
-        ("keepTmpset"
-         , "Keep temporary tileset intact on exit.")
-
-        ("zShift", po::value(&config_.zShift)
-         ->default_value(config_.zShift)->required()
-         , "Manual height adjustment (value is "
-         "added to z component of all vertices).")
-
         ;
 
     vt::progressConfiguration(config);
@@ -210,23 +205,13 @@ void Slpk2Vts::configuration(po::options_description &cmdline
 void Slpk2Vts::configure(const po::variables_map &vars)
 {
     vr::registryConfigure(vars);
-    config_.credits = vr::creditsConfigure(vars);
+
+    config_.configure(vars);
 
     createMode_ = (vars.count("overwrite")
                    ? vts::CreateMode::overwrite
                    : vts::CreateMode::failIfExists);
 
-    if ((config_.textureQuality < 0) || (config_.textureQuality > 100)) {
-        throw po::validation_error
-            (po::validation_error::invalid_option_value, "textureQuality");
-    }
-
-    if (vars.count("tileExtents")) {
-        config_.tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
-    }
-
-    config_.resume = vars.count("resume");
-    config_.keepTmpset = vars.count("keepTmpset");
     epConfig_ = vt::configureProgress(vars);
 }
 
@@ -318,26 +303,18 @@ public:
             , vts::CreateMode mode
             , const Config &config
             , vt::ExternalProgress::Config &&epConfig
-            , const slpk::Archive &input)
+            , const fs::path &input)
         : tools::TmpTsEncoder(path, properties, mode
                               , config, std::move(epConfig)
                               , weightsFull)
         , config_(config)
     {
-        // process input
-        (void) input;
-    }
+        if (config.resume) { return; }
 
-    Encoder(const boost::filesystem::path &path
-            , const vts::TileSetProperties &properties
-            , vts::CreateMode mode
-            , const Config &config
-            , vt::ExternalProgress::Config &&epConfig)
-        : tools::TmpTsEncoder(path, properties, mode
-                              , config, std::move(epConfig)
-                              , weightsResume)
-        , config_(config)
-    {}
+        // open archive and process
+        slpk::Archive ia(input);
+        (void) ia;
+    }
 
 private:
     void prepareTiles(tools::TmpTileset &tmpset
@@ -359,22 +336,9 @@ int Slpk2Vts::run()
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
 
-    if (config_.resume) {
-        // run the encoder
-        Encoder(output_, properties, createMode_, config_
-                , std::move(epConfig_)).run();
-
-        // all done
-        LOG(info4) << "All done.";
-        return EXIT_SUCCESS;
-    }
-
-    // open archive
-    slpk::Archive input(input_);
-
     // run the encoder
     Encoder(output_, properties, createMode_, config_
-            , std::move(epConfig_), input).run();
+            , std::move(epConfig_), input_).run();
 
     // all done
     LOG(info4) << "All done.";

@@ -25,6 +25,7 @@
  */
 
 #include "vts-libs/vts/meshop.hpp"
+#include "vts-libs/registry/po.hpp"
 
 #include "./tmptsencoder.hpp"
 
@@ -32,6 +33,7 @@ namespace fs = boost::filesystem;
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
+namespace po = boost::program_options;
 
 namespace vtslibs { namespace vts { namespace tools {
 
@@ -153,6 +155,45 @@ TmpTsEncoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
 void TmpTsEncoder::finish(vts::TileSet &ts)
 {
     ntg_.generate(ts, config_.dtmExtractionRadius, progress_);
+}
+
+void TmpTsEncoder::Config::configuration(po::options_description &config)
+{
+    config.add_options()
+        ("textureQuality", po::value(&textureQuality)
+         ->default_value(textureQuality)->required()
+         , "Texture quality for JPEG texture encoding (0-100).")
+
+        ("dtmExtraction.radius"
+         , po::value(&dtmExtractionRadius)
+         ->default_value(dtmExtractionRadius)->required()
+         , "Radius (in meters) of DTM extraction element (in meters).")
+
+        ("force.watertight", po::value(&forceWatertight)
+         ->default_value(false)->implicit_value(true)
+         , "Enforces full coverage mask to every generated tile even "
+         "when it is holey.")
+
+        ("resume"
+         , "Resumes interrupted encoding. There must be complete (valid) "
+         "temporary tileset inside generated tileset. Use with caution.")
+        ("keepTmpset"
+         , "Keep temporary tileset intact on exit.")
+
+        ;
+}
+
+void TmpTsEncoder::Config::configure(const po::variables_map &vars)
+{
+    credits = registry::creditsConfigure(vars);
+    if ((textureQuality < 0) || (textureQuality > 100)) {
+        throw po::validation_error
+            (po::validation_error::invalid_option_value, "textureQuality");
+    }
+
+    resume = vars.count("resume");
+    keepTmpset = vars.count("keepTmpset");
+
 }
 
 } } } // namespace vtslibs::vts::tools
