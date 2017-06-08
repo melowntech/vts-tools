@@ -27,8 +27,11 @@
 #include "utility/buildsys.hpp"
 #include "utility/gccversion.hpp"
 #include "utility/limits.hpp"
+#include "utility/path.hpp"
 
 #include "service/cmdline.hpp"
+
+#include "geometry/meshop.hpp"
 
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts.hpp"
@@ -45,7 +48,7 @@
 
 #include "slpk/reader.hpp"
 
-#include "./tmptileset.hpp"
+#include "./tmptsencoder.hpp"
 #include "./repackatlas.hpp"
 
 
@@ -61,31 +64,24 @@ namespace tools = vtslibs::vts::tools;
 
 namespace {
 
-struct Config {
+struct Config : tools::TmpTsEncoder::Config {
     std::string tilesetId;
     std::string referenceFrame;
-    vs::CreditIds credits;
-    int textureQuality;
     math::Size2 optimalTextureSize;
     double ntLodPixelSize;
-    double dtmExtractionRadius;
 
-    bool forceWatertight;
     boost::optional<vts::LodTileRange> tileExtents;
     double clipMargin;
     double borderClipMargin;
     double sigmaEditCoef;
-    bool resume;
-    bool keepTmpset;
-
     double zShift;
 
     Config()
-        : textureQuality(85), optimalTextureSize(256, 256)
-        , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
-        , forceWatertight(false), clipMargin(1.0 / 128.)
+        : optimalTextureSize(256, 256)
+        , ntLodPixelSize(1.0)
+        , clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5), resume(false), keepTmpset(false)
+        , sigmaEditCoef(1.5)
         , zShift(0.0)
     {}
 };
@@ -246,14 +242,22 @@ usage
     return false;
 }
 
-int Slpk2Vts::run()
+void writeMtl(const fs::path &path, const std::string &name)
 {
-    // open archive
-    slpk::Archive input(input_);
+    LOG(info1) << "Writing " << path;
+    std::ofstream f(path.string());
 
-    // input.loadNodeIndex("nodes/0-0-2/");
-    auto nodes(input.loadTree());
-    for (const auto &n : nodes) {
+    f << "newmtl 0\n"
+      << "map_Kd " << name
+      << "\n";
+}
+
+void debug(const slpk::Archive &input)
+{
+    const vts::CsConvertor conv(input.sceneLayerInfo().spatialReference.srs()
+                                , "pseudomerc-va");
+
+    for (const auto &n : input.loadTree()) {
         const auto &node(n.second);
         LOG(info4) << n.first;
         LOG(info4) << "    geometry:";
@@ -266,7 +270,111 @@ int Slpk2Vts::run()
         }
 
         auto geometry(input.loadGeometry(node));
+
+        {
+            auto igd(node.geometryData.begin());
+            int meshIndex(0);
+            for (auto &mesh : geometry) {
+                for (auto &v : mesh.vertices) { v = conv(v); }
+                const fs::path path((*igd++).href);
+                const auto meshPath(utility::addExtension(path, ".obj"));
+                create_directories(meshPath.parent_path());
+
+                // TODO get extension from internals
+                const auto texPath(utility::addExtension(path, ".jpg"));
+                const auto mtlPath(utility::addExtension(path, ".mtl"));
+
+                // save mesh
+                {
+                    utility::ofstreambuf os(meshPath.string());
+                    os.precision(12);
+                    saveAsObj(mesh, os, mtlPath.filename().string());
+                    os.flush();
+                }
+
+                // copy texture as-is
+                copy(input.texture(node, meshIndex), texPath);
+
+                writeMtl(mtlPath, texPath.filename().string());
+
+                ++meshIndex;
+            }
+        }
     }
+}
+
+#if 0
+const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
+const vt::ExternalProgress::Weights weightsResume{40, 10};
+#else
+const vt::ExternalProgress::Weights weightsFull{40, 10};
+const vt::ExternalProgress::Weights weightsResume{40, 10};
+#endif
+
+class Encoder : public tools::TmpTsEncoder {
+public:
+    Encoder(const boost::filesystem::path &path
+            , const vts::TileSetProperties &properties
+            , vts::CreateMode mode
+            , const Config &config
+            , vt::ExternalProgress::Config &&epConfig
+            , const slpk::Archive &input)
+        : tools::TmpTsEncoder(path, properties, mode
+                              , config, std::move(epConfig)
+                              , weightsFull)
+        , config_(config)
+    {
+        // process input
+        (void) input;
+    }
+
+    Encoder(const boost::filesystem::path &path
+            , const vts::TileSetProperties &properties
+            , vts::CreateMode mode
+            , const Config &config
+            , vt::ExternalProgress::Config &&epConfig)
+        : tools::TmpTsEncoder(path, properties, mode
+                              , config, std::move(epConfig)
+                              , weightsResume)
+        , config_(config)
+    {}
+
+private:
+    void prepareTiles(tools::TmpTileset &tmpset
+                      , vt::ExternalProgress &progress);
+
+    const Config config_;
+};
+
+void Encoder::prepareTiles(tools::TmpTileset &tmpset
+                           , vt::ExternalProgress &progress)
+{
+    (void) tmpset;
+    (void) progress;
+}
+
+int Slpk2Vts::run()
+{
+    vts::TileSetProperties properties;
+    properties.referenceFrame = config_.referenceFrame;
+    properties.id = config_.tilesetId;
+
+    if (config_.resume) {
+        // run the encoder
+        Encoder(output_, properties, createMode_, config_
+                , std::move(epConfig_)).run();
+
+        // all done
+        LOG(info4) << "All done.";
+        return EXIT_SUCCESS;
+    }
+
+    // open archive
+    slpk::Archive input(input_);
+
+    // run the encoder
+    Encoder(output_, properties, createMode_, config_
+            , std::move(epConfig_), input).run();
 
     // all done
     LOG(info4) << "All done.";

@@ -10,6 +10,7 @@ define_module(LIBRARY vtstools
 set(vtstools_SOURCES
   tmptileset.hpp tmptileset.cpp
   repackatlas.hpp repackatlas.cpp
+  tmptsencoder.hpp tmptsencoder.cpp
   )
 
 add_library(vtstools STATIC ${vtstools_SOURCES})
