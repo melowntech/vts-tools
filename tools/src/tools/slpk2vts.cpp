@@ -24,6 +24,10 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <boost/utility/in_place_factory.hpp>
+
+#include <opencv2/highgui/highgui.hpp>
+
 #include "utility/buildsys.hpp"
 #include "utility/gccversion.hpp"
 #include "utility/limits.hpp"
@@ -242,7 +246,8 @@ void debug(const slpk::Archive &input)
     const vts::CsConvertor conv(input.sceneLayerInfo().spatialReference.srs()
                                 , "pseudomerc-va");
 
-    for (const auto &n : input.loadTree()) {
+    const auto tree(input.loadTree());
+    for (const auto &n : tree.nodes) {
         const auto &node(n.second);
         LOG(info4) << n.first;
         LOG(info4) << "    geometry:";
@@ -288,57 +293,379 @@ void debug(const slpk::Archive &input)
     }
 }
 
+// ------------------------------------------------------------------------
+
+/** Loads SLPK geometry as a list of submeshes.
+ */
+class VtsMeshLoader
+    : public slpk::GeometryLoader
+    , public geometry::ObjParserBase
+{
+public:
+    virtual geometry::ObjParserBase& next() {
+        mesh_.submeshes.emplace_back();
+        current_ = &mesh_.submeshes.back();
+        return *this;
+    }
+
+    const vts::Mesh& mesh() { return mesh_; }
+
+    virtual void addVertex(const Vector3d &v) {
+        current_->vertices.emplace_back(v.x, v.y, v.z);
+    }
+
+    virtual void addTexture(const Vector3d &t) {
+        current_->tc.emplace_back(t.x, t.y);
+    }
+
+    virtual void addFacet(const Facet &f) {
+        current_->faces.emplace_back(f.v[0], f.v[1], f.v[2]);
+        current_->facesTc.emplace_back(f.t[0], f.t[1], f.t[2]);
+    }
+
+private:
+    virtual void addNormal(const Vector3d&) {}
+    virtual void materialLibrary(const std::string&) {}
+    virtual void useMaterial(const std::string&) {}
+
+    vts::Mesh mesh_;
+    vts::SubMesh *current_;
+};
+
+// ------------------------------------------------------------------------
+
+boost::optional<double> computeBestLod(const Config &config
+                                       , const vts::NodeInfo &rfNode
+                                       , const vts::CsConvertor conv
+                                       , const vts::Mesh &mesh
+                                       , const std::vector<math::Size2> &sizes)
+{
+    double meshArea(0.0);
+    double textureArea(0.0);
+
+    auto isizes(sizes.begin());
+    for (const auto &sm : mesh) {
+        const auto &size(*isizes++);
+
+        // make all faces valid by default
+        vts::VertexMask valid(sm.vertices.size(), true);
+        math::Points3 projected;
+        projected.reserve(sm.vertices.size());
+
+        auto ivalid(valid.begin());
+        for (const auto &v : sm.vertices) {
+            try {
+                projected.push_back(conv(v));
+                ++ivalid;
+            } catch (const std::exception&) {
+                // failed to convert vertex, mask it and skip
+                projected.emplace_back();
+                *ivalid++ = false;
+            }
+        }
+
+        // clip mesh to node's extents
+        // FIXME: implement mask application in clipping!
+        auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
+        if (osm.faces.empty()) { return boost::none; }
+
+        // at least one face survived remember
+
+        // calculate area (only valid faces)
+        const auto a(area(osm));
+        textureArea += (a.internalTexture * math::area(size));
+        meshArea += a.mesh;
+    }
+
+    // anything?
+    if (!textureArea) { return boost::none; }
+
+    const double texelArea(meshArea / textureArea);
+
+    const auto optimalTileArea
+        (area(config.optimalTextureSize) * texelArea);
+    const auto optimalTileCount(rfNode.extents().area()
+                                / optimalTileArea);
+    return (0.5 * std::log2(optimalTileCount));
+}
+
+struct SrcNodeInfo {
+    /** Node
+     */
+    const slpk::Node *node;
+    double bestLod;
+
+    SrcNodeInfo(const slpk::Node *node, double bestLod)
+        : node(node), bestLod(bestLod)
+    {}
+
+    typedef std::map<const vts::NodeInfo*, SrcNodeInfo> map;
+};
+
+class Analyzer {
+public:
+    Analyzer(const Config &config
+             , const vts::NodeInfo::list &nodes
+             , const slpk::Tree &tree
+             , const slpk::Archive &archive
+             , SrcNodeInfo::map &nodeLodMapping)
+        : config_(config)
+        , nodes_(nodes), tree_(tree), archive_(archive)
+        , inputSrs_(archive_.srs())
+        , nodeLodMapping_(nodeLodMapping)
+    {}
+
+    void run(vt::ExternalProgress &progress);
+
+private:
+    void collect(const std::string &nodeId);
+
+    const Config config_;
+    const vts::NodeInfo::list &nodes_;
+    const slpk::Tree &tree_;
+    const slpk::Archive &archive_;
+    const geo::SrsDefinition inputSrs_;
+
+    SrcNodeInfo::map &nodeLodMapping_;
+};
+
+void Analyzer::run(vt::ExternalProgress &progress)
+{
+    progress.expect(tree_.nodes.size());
+
+    collect(tree_.rootNodeId);
+
+    // TODO: sigma-edit best lods at collected nodes
+    // TODO: distribute lods through hierarchy
+}
+
+void Analyzer::collect(const std::string &nodeId)
+{
+    const auto *node(tree_.find(nodeId));
+    if (!node) {
+        LOG(warn3) << "Referenced node <" << nodeId << "> not found.";
+    }
+
+    LOG(info4) << "node: " << node->id << " level=" << node->level << ".";
+    if (!node->children.empty()) {
+        for (const auto &child : node->children) {
+            collect(child.id);
+        }
+        return;
+    }
+
+    // load geometry
+    VtsMeshLoader loader;
+    archive_.loadGeometry(loader, *node);
+
+    // measure textures
+    std::vector<math::Size2> sizes;
+    {
+        for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
+            sizes.push_back(archive_.textureSize(*node, i));
+        }
+    }
+
+    // bottom level -> compute best lod in each node
+    for (const auto &rfNode : nodes_) {
+        const vts::CsConvertor conv(inputSrs_, rfNode.srs());
+
+        auto bestLod(computeBestLod(config_, rfNode, conv
+                                    , loader.mesh(), sizes));
+        if (!bestLod) { continue; }
+        LOG(info4) << "<" << rfNode.srs() << ">: " << nodeId << " "
+                   << *bestLod;
+
+        // TODO: remember best lod
+    }
+}
+
+// ------------------------------------------------------------------------
+
+class Cutter {
+public:
+    Cutter(const Config &config, const vr::ReferenceFrame &rf
+           , tools::TmpTileset &tmpset, const slpk::Archive &archive)
+        : config_(config), rf_(rf), tmpset_(tmpset), archive_(archive)
+        , nodes_(vts::NodeInfo::leaves(rf_))
+        , inputSrs_(archive_.srs())
+    {}
+
+    void run(vt::ExternalProgress &progress);
+
+private:
+    void cutNode(const slpk::Node &node);
+
+    cv::Mat loadTexture(const slpk::Node &node, int index) const;
+
+    const Config &config_;
+    const vr::ReferenceFrame &rf_;
+    tools::TmpTileset &tmpset_;
+    const slpk::Archive &archive_;
+
+    const vts::NodeInfo::list nodes_;
+    const geo::SrsDefinition inputSrs_;
+
+    SrcNodeInfo::map nodeLodMapping_;
+};
+
+void Cutter::run(vt::ExternalProgress &progress)
+{
+    // load all available nodes
+    const auto tree(archive_.loadTree());
+
+    // analyze first
+    Analyzer(config_, nodes_, tree, archive_, nodeLodMapping_).run(progress);
+
+    // update progress
+    progress.expect(tree.nodes.size());
+
+    for (const auto &ni : tree.nodes) {
+        cutNode(ni.second);
+        ++progress;
+    }
+}
+
+cv::Mat Cutter::loadTexture(const slpk::Node &node, int index) const
+{
+    const auto is(archive_.texture(node, index));
+    LOG(info1) << "Loading texture from " << is->path() << ".";
+    auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
+
+    if (!tex.data) {
+        LOGTHROW(err2, std::runtime_error)
+            << "Unable to load texture from " << is->path() << ".";
+    }
+
+    return tex;
+}
+
+void Cutter::cutNode(const slpk::Node &node)
+{
+    (void) node;
+
 #if 0
+    VtsMeshLoader loader;
+    archive_.loadGeometry(loader, node);
+
+    // for each submesh
+    std::size_t meshIndex(0);
+    for (auto &sm : loader.mesh()) {
+        const auto texture(loadTexture(node, meshIndex));
+
+        // and for each RF node
+        for (const auto &rfNode : nodes_) {
+            const vts::CsConvertor conv(inputSrs_, rfNode.srs());
+
+            // make all faces valid by default
+            vts::VertexMask valid(sm.vertices.size(), true);
+            math::Points3 projected;
+            projected.reserve(sm.vertices.size());
+
+            auto ivalid(valid.begin());
+            for (const auto &v : sm.vertices) {
+                try {
+                    projected.push_back(conv(v));
+                    // apply zShift
+                    if (config_.zShift) {
+                        projected.back()(2) += config_.zShift;
+                    }
+                    ++ivalid;
+                } catch (const std::exception&) {
+                    // failed to convert vertex, mask it and skip
+                    projected.emplace_back();
+                    *ivalid++ = false;
+                }
+            }
+
+            // clip mesh to node's extents
+            // FIXME: implement mask application in clipping!
+            auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
+            if (osm.faces.empty()) { continue; }
+
+            // at least one face survived, remember
+            vts::Mesh mesh;
+            vts::opencv::Atlas atlas;
+            mesh.submeshes.push_back(std::move(osm));
+            atlas.add(texture);
+
+            // calculate area (only valid faces)
+            const auto a(area(mesh));
+            const double textureArea(a.submeshes.front().internalTexture
+                                     * texture.cols * texture.rows);
+            const double texelArea(a.mesh / textureArea);
+
+            const auto optimalTileArea
+                (area(config_.optimalTextureSize) * texelArea);
+            const auto optimalTileCount(rfNode.extents().area()
+                                        / optimalTileArea);
+            const auto bestLod(0.5 * std::log2(optimalTileCount));
+
+            LOG(info4) << rfNode.srs()
+                       << ": id=" << node.id
+                       << ", faces=" << osm.faces.size()
+                       << ", textureArea=" << textureArea
+                       << ", bestLod=" << bestLod;
+        }
+
+        ++meshIndex;
+    }
+
+#endif
+}
+
+// ------------------------------------------------------------------------
+
 const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
-#else
-const vt::ExternalProgress::Weights weightsFull{40, 10};
-const vt::ExternalProgress::Weights weightsResume{40, 10};
-#endif
 
 class Encoder : public tools::TmpTsEncoder {
 public:
     Encoder(const boost::filesystem::path &path
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
-            , const Config &config
+            , const ::Config &config
             , vt::ExternalProgress::Config &&epConfig
-            , const fs::path &input)
+            , const boost::optional<slpk::Archive> &input)
         : tools::TmpTsEncoder(path, properties, mode
                               , config, std::move(epConfig)
                               , weightsFull)
         , config_(config)
     {
         if (config.resume) { return; }
+        if (!input) {
+            LOGTHROW(err1, std::runtime_error)
+                << "No archive passed while not resuming.";
+        }
 
-        // open archive and process
-        slpk::Archive ia(input);
-        (void) ia;
+        Cutter(config_, referenceFrame(), tmpset(), *input).run(progress());
     }
 
 private:
-    void prepareTiles(tools::TmpTileset &tmpset
-                      , vt::ExternalProgress &progress);
-
-    const Config config_;
+    const ::Config config_;
 };
-
-void Encoder::prepareTiles(tools::TmpTileset &tmpset
-                           , vt::ExternalProgress &progress)
-{
-    (void) tmpset;
-    (void) progress;
-}
 
 int Slpk2Vts::run()
 {
+#if 0
+    // debug :)
+    debug(slpk::Archive(input_));
+    return EXIT_SUCCESS;
+#endif
+
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
 
+    // open input if in non-resume mode
+    boost::optional<slpk::Archive> input;
+    if (!config_.resume) {
+        input = boost::in_place(input_);
+    }
+
     // run the encoder
     Encoder(output_, properties, createMode_, config_
-            , std::move(epConfig_), input_).run();
+            , std::move(epConfig_), input).run();
 
     // all done
     LOG(info4) << "All done.";

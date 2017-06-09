@@ -47,7 +47,7 @@ namespace vtslibs { namespace vts { namespace tools {
 class TmpTileset {
 public:
     TmpTileset(const boost::filesystem::path &root
-               , bool crete = true);
+               , bool create = true);
     ~TmpTileset();
 
     /** Keep tmp tileset when destructor kicks in if true.
