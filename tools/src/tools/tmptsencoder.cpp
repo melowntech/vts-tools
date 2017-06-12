@@ -88,6 +88,11 @@ void TmpTsEncoder::run()
 
 void TmpTsEncoder::prepare()
 {
+    if (!config_.resume) {
+        tmpset_.flush();
+        ntg_.save(tmpset_.root() / "navtile.info");
+    }
+
     validTree_ = index_ = tmpset_.tileIndex();
 
     // make valid tree complete from root

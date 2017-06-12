@@ -334,14 +334,25 @@ private:
 
 // ------------------------------------------------------------------------
 
-boost::optional<double> computeBestLod(const Config &config
-                                       , const vts::NodeInfo &rfNode
-                                       , const vts::CsConvertor conv
-                                       , const vts::Mesh &mesh
-                                       , const std::vector<math::Size2> &sizes)
+double bestLod(const Config &config
+               , const vts::NodeInfo &rfNode
+               , const vts::SubMeshArea &area)
 {
-    double meshArea(0.0);
-    double textureArea(0.0);
+    const double texelArea(area.mesh / area.internalTexture);
+
+    const auto optimalTileArea
+        (math::area(config.optimalTextureSize) * texelArea);
+    const auto optimalTileCount(rfNode.extents().area()
+                                / optimalTileArea);
+    return (0.5 * std::log2(optimalTileCount));
+}
+
+vts::SubMeshArea measureMesh(const vts::NodeInfo &rfNode
+                             , const vts::CsConvertor conv
+                             , const vts::Mesh &mesh
+                             , const std::vector<math::Size2> &sizes)
+{
+    vts::SubMeshArea area;
 
     auto isizes(sizes.begin());
     for (const auto &sm : mesh) {
@@ -367,39 +378,38 @@ boost::optional<double> computeBestLod(const Config &config
         // clip mesh to node's extents
         // FIXME: implement mask application in clipping!
         auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
-        if (osm.faces.empty()) { return boost::none; }
+        if (osm.faces.empty()) { continue; }
 
         // at least one face survived remember
 
         // calculate area (only valid faces)
-        const auto a(area(osm));
-        textureArea += (a.internalTexture * math::area(size));
-        meshArea += a.mesh;
+        const auto a(vts::area(osm));
+        area.internalTexture += (a.internalTexture * math::area(size));
+        area.mesh += a.mesh;
     }
 
-    // anything?
-    if (!textureArea) { return boost::none; }
-
-    const double texelArea(meshArea / textureArea);
-
-    const auto optimalTileArea
-        (area(config.optimalTextureSize) * texelArea);
-    const auto optimalTileCount(rfNode.extents().area()
-                                / optimalTileArea);
-    return (0.5 * std::log2(optimalTileCount));
+    return area;
 }
 
-struct SrcNodeInfo {
-    /** Node
+/** Rf subtree root to mesh area mapping.
+ */
+typedef std::map<const vts::NodeInfo*, vts::SubMeshArea> RfNodeMeshArea;
+
+struct LodInfo {
+    /** Rf subtree root to bottom lod mapping.
      */
-    const slpk::Node *node;
-    double bestLod;
+    std::map<const vts::NodeInfo*, vts::Lod> localLods;
 
-    SrcNodeInfo(const slpk::Node *node, double bestLod)
-        : node(node), bestLod(bestLod)
-    {}
+    /** Common min tree depth.
+     *  This is depth where there are data available in all nodes.
+     */
+    int topDepth;
 
-    typedef std::map<const vts::NodeInfo*, SrcNodeInfo> map;
+    /** Max tree depth.
+     */
+    int bottomDepth;
+
+    LodInfo() : topDepth(), bottomDepth() {}
 };
 
 class Analyzer {
@@ -407,51 +417,75 @@ public:
     Analyzer(const Config &config
              , const vts::NodeInfo::list &nodes
              , const slpk::Tree &tree
-             , const slpk::Archive &archive
-             , SrcNodeInfo::map &nodeLodMapping)
+             , const slpk::Archive &archive)
         : config_(config)
         , nodes_(nodes), tree_(tree), archive_(archive)
         , inputSrs_(archive_.srs())
-        , nodeLodMapping_(nodeLodMapping)
     {}
 
-    void run(vt::ExternalProgress &progress);
+    LodInfo run(vt::ExternalProgress &progress) const;
 
 private:
-    void collect(const std::string &nodeId);
+    typedef std::pair<int, int> DepthRange;
 
-    const Config config_;
+    DepthRange bottomMeshArea(const std::string &nodeId, RfNodeMeshArea &bma)
+        const;
+
+    const Config &config_;
     const vts::NodeInfo::list &nodes_;
     const slpk::Tree &tree_;
     const slpk::Archive &archive_;
     const geo::SrsDefinition inputSrs_;
-
-    SrcNodeInfo::map &nodeLodMapping_;
 };
 
-void Analyzer::run(vt::ExternalProgress &progress)
+LodInfo Analyzer::run(vt::ExternalProgress &progress) const
 {
     progress.expect(tree_.nodes.size());
 
-    collect(tree_.rootNodeId);
+    RfNodeMeshArea bma;
+    LodInfo lodInfo;
+    std::tie(lodInfo.topDepth, lodInfo.bottomDepth)
+        = bottomMeshArea(tree_.rootNodeId, bma);
 
-    // TODO: sigma-edit best lods at collected nodes
-    // TODO: distribute lods through hierarchy
+    for (const auto &item : bma) {
+        const auto bl(bestLod(config_, *item.first, item.second));
+        const auto rbl(std::round(bl));
+        lodInfo.localLods[item.first] = rbl;
+    }
+
+    return lodInfo;
 }
 
-void Analyzer::collect(const std::string &nodeId)
+Analyzer::DepthRange
+Analyzer::bottomMeshArea(const std::string &nodeId, RfNodeMeshArea &bma) const
 {
     const auto *node(tree_.find(nodeId));
     if (!node) {
         LOG(warn3) << "Referenced node <" << nodeId << "> not found.";
     }
 
-    LOG(info4) << "node: " << node->id << " level=" << node->level << ".";
     if (!node->children.empty()) {
+        int bottom(-1);
+        int top(-1);
+
+        // process all children
         for (const auto &child : node->children) {
-            collect(child.id);
+            // descend
+            auto dr(bottomMeshArea(child.id, bma));
+
+            // update bottom depth
+            if (dr.second > bottom) { bottom = dr.second; }
+
+            // compute max common top depth
+            if (dr.first > top) { top = dr.first; }
         }
-        return;
+
+        if (node->hasGeometry() && ((node->level + 1) == top)) {
+            // valid node sitting above 4 valid nodes
+            top = node->level;
+        }
+
+        return { top, bottom };
     }
 
     // load geometry
@@ -466,18 +500,97 @@ void Analyzer::collect(const std::string &nodeId)
         }
     }
 
+    if (!node->hasGeometry()) { return { -1, -1 }; }
+
     // bottom level -> compute best lod in each node
     for (const auto &rfNode : nodes_) {
         const vts::CsConvertor conv(inputSrs_, rfNode.srs());
 
-        auto bestLod(computeBestLod(config_, rfNode, conv
-                                    , loader.mesh(), sizes));
-        if (!bestLod) { continue; }
-        LOG(info4) << "<" << rfNode.srs() << ">: " << nodeId << " "
-                   << *bestLod;
-
-        // TODO: remember best lod
+        const auto area(measureMesh(rfNode, conv
+                                 , loader.mesh(), sizes));
+        if (area.internalTexture) {
+            auto &dest(bma[&rfNode]);
+            dest.mesh += area.mesh;
+            dest.internalTexture += area.internalTexture;
+        }
     }
+
+    // default range for this node
+    return { node->level, node->level };
+}
+
+struct NavtileInfo {
+    vts::LodRange lodRange;
+    double pixelSize;
+
+    NavtileInfo() : lodRange(vts::LodRange::emptyRange()), pixelSize() {}
+
+    NavtileInfo(const vts::LodRange &lodRange, double pixelSize)
+        : lodRange(lodRange), pixelSize(pixelSize)
+    {}
+
+    operator bool() const { return !lodRange.empty(); }
+
+    typedef std::map<const vts::RFNode*, NavtileInfo> map;
+};
+
+NavtileInfo computeNavtileInfo(const vts::NodeInfo *node
+                               , vts::Lod localLod
+                               , vts::LodRange depthRange
+                               , const Config &config)
+{
+    (void) node;
+    (void) localLod;
+    (void) depthRange;
+    (void) config;
+
+#if 0
+    // 3. find nt lod by nt lod pixelsize
+    const auto nodeId(node->nodeId());
+
+    // build LOD range
+    vts::LodRange lr(localLod, localLod);
+
+    // nt lod, start with maximum lod
+    vts::Lod ntLod(lod + nodeId.lod);
+
+    // sample one tile at bottom lod
+    const vts::NodeInfo n(node.child
+                          (vts::lowestChild(nodeId, localLod)));
+
+    // tile size at bottom lod
+    const auto ts(math::size(n.extents()));
+
+    // take center of extents
+    const auto ntCenter(math::center(extents));
+
+    // navtile size (in pixels)
+    auto ntSize(vts::NavTile::size());
+    ntSize.width -= 1;
+    ntSize.height -= 1;
+
+    // SRS factors at mesh center
+    const auto f(geo::SrsFactors(node.srsDef())(ntCenter));
+
+    // calculate pixel size from ration between tile area (in "beans") and
+    // navtile size in pixels; ration is down scaled by area of srs factors
+    // scales
+    auto pixelSize(std::sqrt
+                   (math::area(ts)
+                    / (math::area(ntSize)
+                       * f.meridionalScale * f.parallelScale)));
+
+    // find best matching lod
+    // FIXME: probably needs to be fixed
+    while ((ntLod > lr.min) && (pixelSize < config.ntLodPixelSize)) {
+        pixelSize *= 2.0;
+        --ntLod;
+    }
+
+    return NavtileInfo(vts::LodRange(minLod, ntLod), pixelSize);
+#endif
+
+    return {};
 }
 
 // ------------------------------------------------------------------------
@@ -494,7 +607,15 @@ public:
     void run(vt::ExternalProgress &progress);
 
 private:
-    void cutNode(const slpk::Node &node);
+    void cutNode(const slpk::Node &node, const LodInfo &lodInfo);
+
+    void splitToTiles(const vts::NodeInfo &root
+                      , vts::Lod lod, const vts::TileRange &tr
+                      , const vts::Mesh &mesh
+                      , const vts::opencv::Atlas &atlas);
+
+    void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+                 , const vts::opencv::Atlas &atlas);
 
     cv::Mat loadTexture(const slpk::Node &node, int index) const;
 
@@ -505,8 +626,6 @@ private:
 
     const vts::NodeInfo::list nodes_;
     const geo::SrsDefinition inputSrs_;
-
-    SrcNodeInfo::map nodeLodMapping_;
 };
 
 void Cutter::run(vt::ExternalProgress &progress)
@@ -515,13 +634,15 @@ void Cutter::run(vt::ExternalProgress &progress)
     const auto tree(archive_.loadTree());
 
     // analyze first
-    Analyzer(config_, nodes_, tree, archive_, nodeLodMapping_).run(progress);
+    const auto lodInfo(Analyzer(config_, nodes_, tree, archive_)
+                       .run(progress));
 
     // update progress
     progress.expect(tree.nodes.size());
 
     for (const auto &ni : tree.nodes) {
-        cutNode(ni.second);
+        LOG(info3) << "Cutting I3S node <" << ni.first << ">.";
+        cutNode(ni.second, lodInfo);
         ++progress;
     }
 }
@@ -540,22 +661,67 @@ cv::Mat Cutter::loadTexture(const slpk::Node &node, int index) const
     return tex;
 }
 
-void Cutter::cutNode(const slpk::Node &node)
+math::Extents2 computeExtents(const vts::Mesh &mesh)
 {
-    (void) node;
+    math::Extents2 extents(math::InvalidExtents{});
+    for (const auto &sm : mesh) {
+        for (const auto &p : sm.vertices) {
+            update(extents, p(0), p(1));
+        }
+    }
+    return extents;
+}
 
-#if 0
+vts::TileRange computeTileRange(const math::Extents2 &nodeExtents
+                                , vts::Lod localLod
+                                , const math::Extents2 &meshExtents)
+{
+    vts::TileRange r(math::InvalidExtents{});
+    const auto ts(vts::tileSize(nodeExtents, localLod));
+    const auto origin(math::ul(nodeExtents));
+
+    for (const auto &p : vertices(meshExtents)) {
+        update(r, vts::TileRange::point_type
+               ((p(0) - origin(0)) / ts.width
+                , (origin(1) - p(1)) / ts.height));
+    }
+
+    return r;
+}
+
+void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
+{
     VtsMeshLoader loader;
     archive_.loadGeometry(loader, node);
+    vts::opencv::Atlas inAtlas;
+    for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
+        inAtlas.add(loadTexture(node, i));
+    }
 
-    // for each submesh
-    std::size_t meshIndex(0);
-    for (auto &sm : loader.mesh()) {
-        const auto texture(loadTexture(node, meshIndex));
+    // for each valid rfnode
+    for (const auto &item : lodInfo.localLods) {
+        const auto rfNode(*item.first);
+        const auto bottomLod(item.second);
+        const vts::CsConvertor conv(inputSrs_, rfNode.srs());
 
-        // and for each RF node
-        for (const auto &rfNode : nodes_) {
-            const vts::CsConvertor conv(inputSrs_, rfNode.srs());
+        // compute local lod + sanity check
+        const auto fromBottom(lodInfo.bottomDepth - node.level);
+        if (fromBottom > bottomLod) {
+            // out of reference frame -> skip
+            continue;
+        }
+
+        const vts::Lod localLod(bottomLod - fromBottom);
+        const auto lod(localLod + rfNode.nodeId().lod);
+
+        // projested mesh/atlas
+        vts::Mesh mesh;
+        vts::opencv::Atlas atlas;
+
+        // and for each submesh
+        std::size_t meshIndex(0);
+        for (auto &sm : loader.mesh()) {
+            const auto &texture(inAtlas.get(meshIndex++));
 
             // make all faces valid by default
             vts::VertexMask valid(sm.vertices.size(), true);
@@ -579,39 +745,90 @@ void Cutter::cutNode(const slpk::Node &node)
             }
 
             // clip mesh to node's extents
-            // FIXME: implement mask application in clipping!
+            // FIXME: implement actual mask application in clipping!
             auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
             if (osm.faces.empty()) { continue; }
 
             // at least one face survived, remember
-            vts::Mesh mesh;
-            vts::opencv::Atlas atlas;
             mesh.submeshes.push_back(std::move(osm));
             atlas.add(texture);
 
-            // calculate area (only valid faces)
-            const auto a(area(mesh));
-            const double textureArea(a.submeshes.front().internalTexture
-                                     * texture.cols * texture.rows);
-            const double texelArea(a.mesh / textureArea);
-
-            const auto optimalTileArea
-                (area(config_.optimalTextureSize) * texelArea);
-            const auto optimalTileCount(rfNode.extents().area()
-                                        / optimalTileArea);
-            const auto bestLod(0.5 * std::log2(optimalTileCount));
-
-            LOG(info4) << rfNode.srs()
-                       << ": id=" << node.id
-                       << ", faces=" << osm.faces.size()
-                       << ", textureArea=" << textureArea
-                       << ", bestLod=" << bestLod;
         }
 
-        ++meshIndex;
+        // anything there?
+        if (mesh.empty()) { continue; }
+
+        // compute local tile range
+        auto tr(computeTileRange(rfNode.extents(), localLod
+                                 , computeExtents(mesh)));
+
+        // convert local tilerange to global tilerange
+        {
+            const auto origin
+                (vts::lowestChild(vts::point(rfNode.nodeId()), localLod));
+            tr.ll += origin;
+            tr.ur += origin;
+        }
+
+        // split to tiles
+        splitToTiles(rfNode, lod, tr, mesh, atlas);
+    }
+}
+
+void Cutter::splitToTiles(const vts::NodeInfo &root
+                          , vts::Lod lod, const vts::TileRange &tr
+                          , const vts::Mesh &mesh
+                          , const vts::opencv::Atlas &atlas)
+{
+    LOG(info3) << "Splitting to tiles in " << lod << "/" << tr << ".";
+    typedef vts::TileRange::value_type Index;
+    Index je(tr.ur(1));
+    Index ie(tr.ur(0));
+
+    for (Index j = tr.ll(1); j <= je; ++j) {
+        for (Index i = tr.ll(0); i <= ie; ++i) {
+            vts::TileId tileId(lod, i, j);
+            const auto node(root.child(tileId));
+            cutTile(node, mesh, atlas);
+        }
+    }
+}
+
+void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+                     , const vts::opencv::Atlas &atlas)
+{
+    // compute border condition (defaults to all available)
+    vts::BorderCondition borderCondition;
+    if (config_.tileExtents) {
+        borderCondition = vts::inside(*config_.tileExtents, node.nodeId());
+        if (!borderCondition) { return; }
     }
 
-#endif
+    // compute clip extents
+    const auto extents(vts::inflateTileExtents
+                       (node.extents(), config_.clipMargin
+                        , borderCondition, config_.borderClipMargin));
+
+    vts::Mesh clipped;
+    vts::opencv::Atlas clippedAtlas(0); // PNG!
+
+    std::size_t smIndex(0);
+    for (const auto &sm : mesh) {
+        const auto &texture(atlas.get(smIndex++));
+
+        auto m(vts::clip(sm, extents));
+        if (m.empty()) { continue; }
+
+        clipped.submeshes.push_back(std::move(m));
+        clippedAtlas.add(texture);
+    }
+
+    if (clipped.empty()) { return; }
+
+    // store in temporary storage
+    const auto tileId(node.nodeId());
+    tools::repack(tileId, clipped, clippedAtlas);
+    tmpset_.store(tileId, clipped, clippedAtlas);
 }
 
 // ------------------------------------------------------------------------
@@ -661,6 +878,8 @@ int Slpk2Vts::run()
     boost::optional<slpk::Archive> input;
     if (!config_.resume) {
         input = boost::in_place(input_);
+
+        // TODO: sanity check: mesh-pyramids, non-local
     }
 
     // run the encoder
