@@ -76,6 +76,8 @@ protected:
 
     TmpTileset& tmpset() { return tmpset_; }
 
+    NtGenerator& ntg() { return ntg_; }
+
 private:
     void prepare();
 
