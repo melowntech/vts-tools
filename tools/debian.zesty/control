@@ -1,0 +1,28 @@
+Source: vts-tools
+Section: misc
+Priority: extra
+Maintainer: Vaclav Blazek <vaclav.blazek@citationtech.net>
+Build-Depends: debhelper (>= 9.20160115ubuntu3), libboost1.62-all-dev
+               , libopencv-core-dev (>= 2.4.9)
+               , libopencv-highgui-dev (>= 2.4.9)
+               , libopencv-photo-dev (>= 2.4.9)
+               , libopencv-imgproc-dev (>= 2.4.9)
+               , libeigen3-dev (>= 3.1.0-1)
+               , libgdal-dev (>= 2.1), libproj-dev (>= 4.9)
+               , libgeographic-dev (>= 1.45-2)
+               , libjsoncpp-dev (>= 1.7.2-1)
+               , libmagic-dev (>= 5.25)
+               , libcurl4-openssl-dev (>= 7.47)
+               , gawk
+Standards-Version: 3.8.4
+Homepage: https://www.github.com/Melown/
+
+Package: vts-tools
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0)
+Description: VTS Tools
+
+Package: vts-tools-dbg
+Architecture: any
+Depends: ${misc:Depends}, vts-tools (= ${binary:Version})
+Description: Debug Symbols for vts-tools
