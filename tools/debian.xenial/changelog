@@ -1,3 +1,9 @@
+vts-tools (1.1) melown-xenial; urgency=medium
+
+  * Updated vts-libs. Added vts --list-reference-frames command.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Mon, 10 Jul 2017 17:57:36 +0200
+
 vts-tools (1.0) melown-xenial; urgency=low
 
   * Initial build.
