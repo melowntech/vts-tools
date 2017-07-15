@@ -19,7 +19,7 @@ Homepage: https://www.github.com/Melown/
 
 Package: vts-tools
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0)
+Depends: ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0), proj-data-vts
 Description: VTS Tools
 
 Package: vts-tools-dbg
