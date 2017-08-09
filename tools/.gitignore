@@ -4,7 +4,6 @@ build.*
 lib
 core
 vgcore.*
-debian
 obj-x86_64-linux-gnu
 output
 .gdb_history

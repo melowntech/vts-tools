@@ -1,6 +1,0 @@
-vts-tools
-vts-tools-dbg
-*.debhelper*
-*.substvars
-files
-debhelper-build-stamp

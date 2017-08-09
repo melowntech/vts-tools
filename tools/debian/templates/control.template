@@ -1,0 +1,21 @@
+Source: ctt-vts-tools
+Section: non-free/citationtech
+Priority: extra
+Maintainer: Vaclav Blazek <vaclav.blazek@citationtech.net>
+Build-Depends: VAR_BuildDepends
+Standards-Version: 3.8.4
+Homepage: https://github.com/Melown/vts-tools
+
+Package: vts-tools
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0)
+Replaces: ctt-vts-tools (<< 1.50)
+Breaks: ctt-vts-tools (<< 1.50)
+Description: VTS Tools
+
+Package: vts-tools-dbg
+Architecture: any
+Depends: ${misc:Depends}, vts-tools (= ${binary:Version})
+Description: Debug Symbols for vts-tools
+Replaces: ctt-vts-tools-dbg (<< 1.50)
+Breaks: ctt-vts-tools-dbg (<< 1.50)
