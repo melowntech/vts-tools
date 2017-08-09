@@ -13,8 +13,7 @@ DEB_PACKAGE_TOOLS=$(DEB_SOURCE)
 PREFIX=/opt/vts
 
 # install components
-INSTALL_COMPONENTS_MAPPROXY=main
-INSTALL_COMPONENTS_MAPPROXY_TOOLS=tools
+INSTALL_COMPONENTS_TOOLS=vts-tools
 
 # include cmake debian support
 include buildsys/cmake/include/debian.mk
