@@ -1,3 +1,9 @@
+vts-tools (1.51) stable; urgency=low
+
+  * Added coverage-contour-based mesh fusion (merge) in glues.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Fri, 11 Aug 2017 16:56:57 +0200
+
 vts-tools (1.50) stable; urgency=low
 
   * Unified debian packaging.

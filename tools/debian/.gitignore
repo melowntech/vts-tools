@@ -2,7 +2,7 @@
 /ctt-vts-tools-dbg
 /vts-tools
 /vts-tools-dbg
-/*.debhelper*
+/*debhelper*
 /*.substvars
 /files
 /control
