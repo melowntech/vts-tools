@@ -121,12 +121,16 @@ TmpTsEncoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     {
         // load tile
         const auto loaded(tmpset_.load(tileId, config_.textureQuality));
-
+#if 1
         // merge submeshes
         std::tie(tile.mesh, tile.atlas)
             = vts::mergeSubmeshes
             (tileId, std::get<0>(loaded), std::get<1>(loaded)
-             , config_.textureQuality);
+             , config_.textureQuality, config_.smMergeOptions);
+#else
+        tile.mesh = std::get<0>(loaded);
+        tile.atlas = std::get<1>(loaded);
+#endif
 
         // mesh in SDS -> pre-compute geom extents
         tile.geomExtents = geomExtents(*tile.mesh);

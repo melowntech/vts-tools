@@ -88,7 +88,10 @@ struct Config : tools::TmpTsEncoder::Config {
         , borderClipMargin(clipMargin)
         , sigmaEditCoef(1.5)
         , zShift(0.0)
-    {}
+    {
+        // smMergeOptions.atlasPacking
+        //     = vts::SubmeshMergeOptions::AtlasPacking::repack;
+    }
 
     void configuration(po::options_description &config) {
         tools::TmpTsEncoder::Config::configuration(config);
@@ -230,68 +233,6 @@ usage
 )RAW";
     }
     return false;
-}
-
-void writeMtl(const fs::path &path, const std::string &name)
-{
-    LOG(info1) << "Writing " << path;
-    std::ofstream f(path.string());
-
-    f << "newmtl 0\n"
-      << "map_Kd " << name
-      << "\n";
-}
-
-void debug(const slpk::Archive &input)
-{
-    const vts::CsConvertor conv(input.sceneLayerInfo().spatialReference.srs()
-                                , "pseudomerc-va");
-
-    const auto tree(input.loadTree());
-    for (const auto &n : tree.nodes) {
-        const auto &node(n.second);
-        LOG(info4) << n.first;
-        LOG(info4) << "    geometry:";
-        for (const auto &r : node.geometryData) {
-            LOG(info4) << "        " << r.href << " " << r.encoding->mime;
-        }
-        LOG(info4) << "    texture:";
-        for (const auto &r : node.textureData) {
-            LOG(info4) << "        " << r.href << " " << r.encoding->mime;
-        }
-
-        auto geometry(input.loadGeometry(node));
-
-        {
-            auto igd(node.geometryData.begin());
-            int meshIndex(0);
-            for (auto &mesh : geometry) {
-                for (auto &v : mesh.vertices) { v = conv(v); }
-                const fs::path path((*igd++).href);
-                const auto meshPath(utility::addExtension(path, ".obj"));
-                create_directories(meshPath.parent_path());
-
-                // TODO get extension from internals
-                const auto texPath(utility::addExtension(path, ".jpg"));
-                const auto mtlPath(utility::addExtension(path, ".mtl"));
-
-                // save mesh
-                {
-                    utility::ofstreambuf os(meshPath.string());
-                    os.precision(12);
-                    saveAsObj(mesh, os, mtlPath.filename().string());
-                    os.flush();
-                }
-
-                // copy texture as-is
-                copy(input.texture(node, meshIndex), texPath);
-
-                writeMtl(mtlPath, texPath.filename().string());
-
-                ++meshIndex;
-            }
-        }
-    }
 }
 
 // ------------------------------------------------------------------------
@@ -483,12 +424,6 @@ public:
 private:
     typedef std::pair<int, int> DepthRange;
 
-    DepthRange bottomMeshArea(const std::string &nodeId
-                              , MeshInfo::map &mim) const;
-
-    DepthRange bottomMeshAreaImpl(const std::string *nodeId
-                                  , MeshInfo::map *mim) const;
-
     const Config &config_;
     const vts::NodeInfo::list &nodes_;
     const slpk::Tree &tree_;
@@ -502,111 +437,88 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
                << " I3S nodes).";
     progress.expect(tree_.nodes.size());
 
-    MeshInfo::map mim;
+    // find limits for data nodes: top/bottom and bottom common to all subtrees
     LodInfo lodInfo;
-    std::tie(lodInfo.topDepth, lodInfo.bottomDepth)
-        = bottomMeshArea(tree_.rootNodeId, mim);
+    lodInfo.topDepth = std::numeric_limits<int>::max();
+    lodInfo.bottomDepth = -1;
+    int commonBottom(std::numeric_limits<int>::max());
 
-    for (const auto &item : mim) {
-        const auto bl(bestLod(config_, *item.first, item.second.area));
-        lodInfo.localLods[item.first]
-            = LodParams(item.second.extents, std::round(bl));
-    }
-
-    return lodInfo;
-}
-
-Analyzer::DepthRange
-Analyzer::bottomMeshArea(const std::string &nodeId, MeshInfo::map &mim) const
-{
-    Analyzer::DepthRange out;
-    auto *mimp(&mim);
-    auto outp(&out);
-    auto *nodeIdp(&nodeId);
-
-    // run in parallel
-    UTILITY_OMP(parallel)
-    UTILITY_OMP(single)
     {
-        *outp = bottomMeshAreaImpl(nodeIdp, mimp);
-    }
-
-    return out;
-}
-
-Analyzer::DepthRange
-Analyzer::bottomMeshAreaImpl(const std::string *nodeId, MeshInfo::map *mim)
-    const
-{
-    const auto *node(tree_.find(*nodeId));
-    if (!node) {
-        LOG(warn3) << "Referenced node <" << *nodeId << "> not found.";
-    }
-
-    if (!node->children.empty()) {
-        int bottom(-1);
-        int top(-1);
-
-        std::vector<DepthRange> ranges;
-
-        // process all children
-        for (const auto &child : node->children) {
-            const std::string *childId(&child.id);
-
-            // descend
-            UTILITY_OMP(task shared(ranges))
-            {
-                const auto dr(bottomMeshAreaImpl(childId, mim));
-                UTILITY_OMP(critical(slpk2vts_meshInfo_1))
-                    ranges.push_back(dr);
+        for (const auto item : tree_.nodes) {
+            const auto &node(item.second);
+            if (!node.hasGeometry()) { continue; }
+            if (node.children.empty()) {
+                // leaf
+                commonBottom = std::min(commonBottom, node.level);
+                lodInfo.bottomDepth
+                    = std::max(lodInfo.bottomDepth, node.level);
+            } else {
+                // inner node
+                lodInfo.topDepth = std::min(lodInfo.topDepth, node.level);
             }
         }
 
-        // wait for task in the above loop
-        UTILITY_OMP(taskwait)
-
-        for (const auto &dr : ranges) {
-            // update bottom depth
-            if (dr.second > bottom) { bottom = dr.second; }
-
-            // compute max common top depth
-            if (dr.first > top) { top = dr.first; }
-        }
-
-        if (node->hasGeometry() && ((node->level + 1) == top)) {
-            // valid node sitting above 4 valid nodes
-            top = node->level;
-        }
-
-        return { top, bottom };
+        LOG(info2) << "Found top/common-bottom/bottom: "
+                   << lodInfo.topDepth << "/" << commonBottom
+                   << "/" << lodInfo.bottomDepth << ".";
     }
 
-    // load geometry
-    VtsMeshLoader loader;
-    archive_.loadGeometry(loader, *node);
+    MeshInfo::map mim;
 
-    // measure textures
-    std::vector<math::Size2> sizes;
-    {
-        for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
-            sizes.push_back(archive_.textureSize(*node, i));
+    // accumulate mesh area (both 3D and 2D) in all nodes at common bottom depth
+
+    // collect nodes for OpenMP
+    std::vector<const slpk::Node*> nodes;
+    for (const auto &item : tree_.nodes) {
+        const auto &node(item.second);
+        if ((node.level == commonBottom) && (node.hasGeometry())) {
+            nodes.push_back(&node);
         }
     }
 
-    if (!node->hasGeometry()) { return { -1, -1 }; }
+    auto *pmim(&mim);
+    const auto *pnodes(&nodes);
 
-    // bottom level -> compute best lod in each node
-    for (const auto &rfNode : nodes_) {
-        const vts::CsConvertor conv(inputSrs_, rfNode.srs());
-        const auto mi(measureMesh(rfNode, conv, loader.mesh(), sizes));
-        if (mi) {
-            UTILITY_OMP(critical(slpk2vts_meshInfo_2))
-                (*mim)[&rfNode] += mi;
+    UTILITY_OMP(parallel for shared(pmim))
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const auto &node(*(*pnodes)[i]);
+
+        // load geometry
+        VtsMeshLoader loader;
+        archive_.loadGeometry(loader, node);
+
+        // measure textures
+        std::vector<math::Size2> sizes;
+        {
+            for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
+                sizes.push_back(archive_.textureSize(node, i));
+            }
+        }
+
+        // compute mesh are in each RF node
+        for (const auto &rfNode : nodes_) {
+            const vts::CsConvertor conv(inputSrs_, rfNode.srs());
+            const auto mi(measureMesh(rfNode, conv, loader.mesh(), sizes));
+            if (mi) {
+                UTILITY_OMP(critical(slpk2vts_meshInfo_1))
+                    (*pmim)[&rfNode] += mi;
+            }
         }
     }
 
-    // default range for this node
-    return { node->level, node->level };
+    // shift between common depth and bottom depth
+    const auto lodShift(lodInfo.bottomDepth - commonBottom);
+
+    for (const auto &item : mim) {
+        const auto bl
+            (lodShift + bestLod(config_, *item.first, item.second.area));
+        const auto &lod(lodInfo.localLods[item.first]
+                        = LodParams(item.second.extents, std::round(bl)));
+        LOG(info2) << "Assigned LOD " << lod << " for bottom in subtree "
+                   << item.first->srs() << ".";
+    }
+
+    return lodInfo;
 }
 
 void computeNavtileInfo(const Config &config, const vts::NodeInfo &node
@@ -626,8 +538,13 @@ void computeNavtileInfo(const Config &config, const vts::NodeInfo &node
         lr.min = nodeId.lod + lodParams.lod - lodDiff;
     }
 
+    // fix limit for tile extents
+    if (config.tileExtents && (config.tileExtents->lod >= node.rootLod())) {
+        lr.min = config.tileExtents->lod;
+    }
+
     // nt lod, start with maximum lod
-    vts::Lod ntLod(lodParams.lod + nodeId.lod);
+    vts::Lod ntLod(lr.max);
 
     // sample one tile at bottom lod
     const vts::NodeInfo n(node.child
@@ -682,12 +599,14 @@ public:
 private:
     void cutNode(const slpk::Node &node, const LodInfo &lodInfo);
 
-    void splitToTiles(const vts::NodeInfo &root
+    void splitToTiles(const slpk::Node &slpkNode
+                      , const vts::NodeInfo &root
                       , vts::Lod lod, const vts::TileRange &tr
                       , const vts::Mesh &mesh
                       , const vts::opencv::Atlas &atlas);
 
-    void cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
+    void cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
+                 , const vts::Mesh &mesh
                  , const vts::opencv::Atlas &atlas);
 
     cv::Mat loadTexture(const slpk::Node &node, int index) const;
@@ -855,11 +774,12 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
         // split to tiles
         LOG(info3) << "Splitting I3S node <" << node.id << "> to tiles in "
                    << lod << "/" << tr << ".";
-        splitToTiles(rfNode, lod, tr, mesh, atlas);
+        splitToTiles(node, rfNode, lod, tr, mesh, atlas);
     }
 }
 
-void Cutter::splitToTiles(const vts::NodeInfo &root
+void Cutter::splitToTiles(const slpk::Node &slpkNode
+                          , const vts::NodeInfo &root
                           , vts::Lod lod, const vts::TileRange &tr
                           , const vts::Mesh &mesh
                           , const vts::opencv::Atlas &atlas)
@@ -872,13 +792,13 @@ void Cutter::splitToTiles(const vts::NodeInfo &root
         for (Index i = tr.ll(0); i <= ie; ++i) {
             vts::TileId tileId(lod, i, j);
             const auto node(root.child(tileId));
-            cutTile(node, mesh, atlas);
+            cutTile(slpkNode, node, mesh, atlas);
         }
     }
 }
 
-void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
-                     , const vts::opencv::Atlas &atlas)
+void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
+                     , const vts::Mesh &mesh, const vts::opencv::Atlas &atlas)
 {
     // compute border condition (defaults to all available)
     vts::BorderCondition borderCondition;
@@ -912,6 +832,51 @@ void Cutter::cutTile(const vts::NodeInfo &node, const vts::Mesh &mesh
     const auto tileId(node.nodeId());
     tools::repack(tileId, clipped, clippedAtlas);
     tmpset_.store(tileId, clipped, clippedAtlas);
+
+    // save mesh
+    if (0) {
+        // localize mesh
+        auto tmp(clipped);
+        const auto c(math::center(node.extents()));
+        for (auto &sm : tmp.submeshes) {
+            for (auto &v : sm.vertices) {
+                v -= c;
+            }
+        }
+
+        const fs::path path
+            ("dump/" + slpkNode.id + "-"
+             + boost::lexical_cast<std::string>(tileId));
+        fs::create_directories(path);
+
+        std::string mtlLib;
+        mtlLib = "textures.mtl";
+
+        std::ofstream f((path / mtlLib).string());
+
+        int index(0);
+        for (const auto &image : clippedAtlas.get()) {
+            const auto textureName(str(boost::format("%s.jpg") % index));
+            cv::imwrite((path / textureName).string(), image);
+            f << "newmtl " << index
+              << "\nmap_Kd " << textureName
+              << "\n";
+
+            ++index;
+        }
+        f.close();
+
+        index = 0;
+        for (const auto &sm : tmp.submeshes) {
+            const auto objName(str(boost::format("%s.obj") % index));
+
+            vts::saveSubMeshAsObj(path / objName, sm
+                                  , index, &clippedAtlas, mtlLib);
+
+            ++index;
+        }
+    }
+
 }
 
 // ------------------------------------------------------------------------
@@ -929,7 +894,7 @@ public:
             , const boost::optional<slpk::Archive> &input)
         : tools::TmpTsEncoder(path, properties, mode
                               , config, std::move(epConfig)
-                              , weightsFull)
+                              , (config.resume ? weightsResume : weightsFull))
         , config_(config)
     {
         if (config.resume) { return; }
@@ -948,12 +913,6 @@ private:
 
 int Slpk2Vts::run()
 {
-#if 0
-    // debug :)
-    debug(slpk::Archive(input_));
-    return EXIT_SUCCESS;
-#endif
-
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;

@@ -157,12 +157,49 @@ struct Component {
     }
 };
 
+namespace {
+
+void clipToLowerBound(int &spos, int &ssize, int &dpos, int &dsize
+                      , const char*)
+{
+    if (spos >= 0) { return; }
+
+    const auto diff(-spos);
+    spos = 0;
+    ssize -= diff;
+    dpos += diff;
+    dsize -= diff;
+}
+
+void clipToUpperBound(int limit, int &spos, int &ssize, int &dsize
+                      , const char*)
+{
+    const auto send(spos + ssize);
+    if (send <= limit) { return; }
+
+    const auto diff(send - limit);
+    ssize -= diff;
+    dsize -= diff;
+}
+
+} // namespace
+
 void Component::copy(cv::Mat &tex, const cv::Mat &texture) const
 {
-    cv::Mat dst(tex, cv::Rect(rect.packX, rect.packY
-                              , rect.width(), rect.height()));
-    cv::Mat(texture, cv::Rect(rect.x(), rect.y(), rect.width(), rect.height()))
-        .copyTo(dst);
+    cv::Rect src(rect.x(), rect.y(), rect.width(), rect.height());
+    cv::Rect dst(rect.packX, rect.packY, rect.width(), rect.height());
+
+    // clip if source is out of bounds
+    clipToLowerBound(src.x, src.width, dst.x, dst.width, "left");
+    clipToLowerBound(src.y, src.height, dst.y, dst.height, "top");
+
+    clipToUpperBound(texture.cols, src.x, src.width, dst.width, "right");
+    clipToUpperBound(texture.rows, src.y, src.height, dst.height, "bottom");
+
+    if ((src.width <= 0) || (src.height <= 0)) { return; }
+
+    cv::Mat dstPatch(tex, dst);
+    cv::Mat(texture, src).copyTo(dstPatch);
 }
 
 struct ComponentInfo {
@@ -186,6 +223,7 @@ struct ComponentInfo {
         const auto &texture(tx->texture());
         cv::Mat tex(ts.height, ts.width, texture.type());
         tex = cv::Scalar(0, 0, 0);
+        // tex = cv::Scalar(0, 0, 255);
         for (const auto &c : components) {
             c->copy(tex, texture);
         }
@@ -280,10 +318,12 @@ ComponentInfo::ComponentInfo(const TileId &tileId, int id, TextureInfo &tx)
     }
 
     // map tc
-    for (const auto &c : components) {
+    for (auto &c : components) {
         for (const auto &index : c->indices) {
             tcMap[index] = c;
         }
+
+        c->rect.inflate(1.0);
     }
 }
 

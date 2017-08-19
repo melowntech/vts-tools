@@ -48,6 +48,8 @@ public:
         bool resume;
         bool keepTmpset;
 
+        SubmeshMergeOptions smMergeOptions;
+
         Config()
             : textureQuality(85), dtmExtractionRadius(40.0)
             , forceWatertight(false), resume(false), keepTmpset(false)
