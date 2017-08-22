@@ -48,11 +48,13 @@ public:
         bool resume;
         bool keepTmpset;
 
+        bool fuseSubmeshes;
         SubmeshMergeOptions smMergeOptions;
 
         Config()
             : textureQuality(85), dtmExtractionRadius(40.0)
             , forceWatertight(false), resume(false), keepTmpset(false)
+            , fuseSubmeshes(true)
         {}
 
         void configuration(boost::program_options::options_description

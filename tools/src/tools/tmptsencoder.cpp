@@ -121,16 +121,17 @@ TmpTsEncoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     {
         // load tile
         const auto loaded(tmpset_.load(tileId, config_.textureQuality));
-#if 1
-        // merge submeshes
-        std::tie(tile.mesh, tile.atlas)
-            = vts::mergeSubmeshes
-            (tileId, std::get<0>(loaded), std::get<1>(loaded)
-             , config_.textureQuality, config_.smMergeOptions);
-#else
-        tile.mesh = std::get<0>(loaded);
-        tile.atlas = std::get<1>(loaded);
-#endif
+
+        if (config_.fuseSubmeshes) {
+            // merge submeshes
+            std::tie(tile.mesh, tile.atlas)
+                = vts::mergeSubmeshes
+                (tileId, std::get<0>(loaded), std::get<1>(loaded)
+                , config_.textureQuality, config_.smMergeOptions);
+        } else {
+            tile.mesh = std::get<0>(loaded);
+            tile.atlas = std::get<1>(loaded);
+        }
 
         // mesh in SDS -> pre-compute geom extents
         tile.geomExtents = geomExtents(*tile.mesh);
@@ -171,7 +172,8 @@ void TmpTsEncoder::Config::configuration(po::options_description &config)
     config.add_options()
         ("textureQuality", po::value(&textureQuality)
          ->default_value(textureQuality)->required()
-         , "Texture quality for JPEG texture encoding (0-100).")
+         , "Texture quality for JPEG texture encoding (1-100). "
+         "NB: Special value 0 cases generation lossless PNG textures.")
 
         ("dtmExtraction.radius"
          , po::value(&dtmExtractionRadius)
@@ -189,6 +191,9 @@ void TmpTsEncoder::Config::configuration(po::options_description &config)
         ("keepTmpset"
          , "Keep temporary tileset intact on exit.")
 
+        ("fuseSubmeshes", po::value(&fuseSubmeshes)
+         ->default_value(fuseSubmeshes)->required()
+         , "Fuse submeshes into bigger submeshes (ideally one).")
         ;
 }
 

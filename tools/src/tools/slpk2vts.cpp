@@ -452,10 +452,10 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
                 commonBottom = std::min(commonBottom, node.level);
                 lodInfo.bottomDepth
                     = std::max(lodInfo.bottomDepth, node.level);
-            } else {
-                // inner node
-                lodInfo.topDepth = std::min(lodInfo.topDepth, node.level);
             }
+
+            // update top
+            lodInfo.topDepth = std::min(lodInfo.topDepth, node.level);
         }
 
         LOG(info2) << "Found top/common-bottom/bottom: "
@@ -816,6 +816,7 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
     vts::opencv::Atlas clippedAtlas(0); // PNG!
 
     std::size_t smIndex(0);
+    std::size_t faces(0);
     for (const auto &sm : mesh) {
         const auto &texture(atlas.get(smIndex++));
 
@@ -824,9 +825,14 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
 
         clipped.submeshes.push_back(std::move(m));
         clippedAtlas.add(texture);
+        faces += clipped.submeshes.back().faces.size();
     }
 
     if (clipped.empty()) { return; }
+
+    LOG(info2)
+        << node.nodeId() << ": Cut " << faces
+        << " faces from SLPK node <" << slpkNode.id << ">.";
 
     // store in temporary storage
     const auto tileId(node.nodeId());
