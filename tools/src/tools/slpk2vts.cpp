@@ -241,10 +241,10 @@ usage
  */
 class VtsMeshLoader
     : public slpk::GeometryLoader
-    , public geometry::ObjParserBase
+    , public slpk::MeshLoader
 {
 public:
-    virtual geometry::ObjParserBase& next() {
+    virtual slpk::MeshLoader& next() {
         mesh_.submeshes.emplace_back();
         current_ = &mesh_.submeshes.back();
         return *this;
@@ -252,23 +252,22 @@ public:
 
     const vts::Mesh& mesh() { return mesh_; }
 
-    virtual void addVertex(const Vector3d &v) {
-        current_->vertices.emplace_back(v.x, v.y, v.z);
+    virtual void addVertex(const math::Point3d &v) {
+        current_->vertices.push_back(v);
     }
 
-    virtual void addTexture(const Vector3d &t) {
-        current_->tc.emplace_back(t.x, t.y);
+    virtual void addTexture(const math::Point2d &t) {
+        current_->tc.push_back(t);
     }
 
-    virtual void addFacet(const Facet &f) {
-        current_->faces.emplace_back(f.v[0], f.v[1], f.v[2]);
-        current_->facesTc.emplace_back(f.t[0], f.t[1], f.t[2]);
+    virtual void addFace(const Face &mesh, const Face &tc, const Face&) {
+        current_->faces.push_back(mesh);
+        current_->facesTc.push_back(tc);
     }
 
 private:
-    virtual void addNormal(const Vector3d&) {}
-    virtual void materialLibrary(const std::string&) {}
-    virtual void useMaterial(const std::string&) {}
+    virtual void addNormal(const math::Point3d&) {}
+    virtual void addTxRegion(const Region&) {}
 
     vts::Mesh mesh_;
     vts::SubMesh *current_;
