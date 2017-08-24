@@ -260,14 +260,17 @@ public:
         current_->tc.push_back(t);
     }
 
-    virtual void addFace(const Face &mesh, const Face &tc, const Face&) {
+    virtual void addFace(const Face &mesh, const FaceTc &tc, const Face&) {
         current_->faces.push_back(mesh);
         current_->facesTc.push_back(tc);
+        // TODO: store region index somewhere
     }
 
 private:
     virtual void addNormal(const math::Point3d&) {}
-    virtual void addTxRegion(const Region&) {}
+    virtual void addTxRegion(const Region&) {
+        // TODO: store region somewhere
+    }
 
     vts::Mesh mesh_;
     vts::SubMesh *current_;
