@@ -24,12 +24,44 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <vector>
+
+#include "math/geometry_core.hpp"
+
 #include "vts-libs/vts/types.hpp"
 #include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 
 namespace vtslibs { namespace vts { namespace tools {
 
+struct TextureRegionInfo {
+    typedef std::vector<int> Faces;
+
+    struct Region {
+        math::Extents2 region;
+        math::Size2f size;
+
+        typedef std::vector<Region> list;
+
+        Region(const math::Extents2 &region)
+            : region(region), size(math::size(region))
+        {}
+    };
+
+    Region::list regions;
+    Faces faces;
+
+    TextureRegionInfo() = default;
+    TextureRegionInfo(const Region::list &regions)
+        : regions(regions)
+    {}
+
+    typedef std::vector<TextureRegionInfo> list;
+};
+
 void repack(const TileId &tileId, Mesh &mesh, opencv::Atlas &atlas);
+
+void repack(const TileId &tileId, Mesh &mesh, opencv::Atlas &atlas
+            , const TextureRegionInfo::list &textureRegions);
 
 } } } // namespace vtslibs::vts::tools

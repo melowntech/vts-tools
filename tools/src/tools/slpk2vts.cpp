@@ -88,10 +88,7 @@ struct Config : tools::TmpTsEncoder::Config {
         , borderClipMargin(clipMargin)
         , sigmaEditCoef(1.5)
         , zShift(0.0)
-    {
-        // smMergeOptions.atlasPacking
-        //     = vts::SubmeshMergeOptions::AtlasPacking::repack;
-    }
+    {}
 
     void configuration(po::options_description &config) {
         tools::TmpTsEncoder::Config::configuration(config);
@@ -237,6 +234,8 @@ usage
 
 // ------------------------------------------------------------------------
 
+typedef tools::TextureRegionInfo RegionInfo;
+
 /** Loads SLPK geometry as a list of submeshes.
  */
 class VtsMeshLoader
@@ -244,13 +243,19 @@ class VtsMeshLoader
     , public slpk::MeshLoader
 {
 public:
+    VtsMeshLoader() : current_(nullptr), currentRInfo_(nullptr) {}
+
     virtual slpk::MeshLoader& next() {
         mesh_.submeshes.emplace_back();
         current_ = &mesh_.submeshes.back();
+
+        regions_.emplace_back();
+        currentRInfo_ = &regions_.back();
         return *this;
     }
 
-    const vts::Mesh& mesh() { return mesh_; }
+    const vts::Mesh& mesh() const { return mesh_; }
+    const RegionInfo::list& regions() const { return regions_; }
 
     virtual void addVertex(const math::Point3d &v) {
         current_->vertices.push_back(v);
@@ -263,17 +268,20 @@ public:
     virtual void addFace(const Face &mesh, const FaceTc &tc, const Face&) {
         current_->faces.push_back(mesh);
         current_->facesTc.push_back(tc);
-        // TODO: store region index somewhere
+        currentRInfo_->faces.push_back(tc.region);
+    }
+
+    virtual void addTxRegion(const Region &region) {
+        currentRInfo_->regions.emplace_back(region);
     }
 
 private:
     virtual void addNormal(const math::Point3d&) {}
-    virtual void addTxRegion(const Region&) {
-        // TODO: store region somewhere
-    }
 
     vts::Mesh mesh_;
     vts::SubMesh *current_;
+    RegionInfo::list regions_;
+    RegionInfo *currentRInfo_;
 };
 
 // ------------------------------------------------------------------------
@@ -322,7 +330,8 @@ struct MeshInfo {
 
     operator bool() const { return area.internalTexture; }
 
-    void update(const vts::SubMesh &mesh, const math::Size2 &txSize) {
+    void update(const vts::SubMesh &mesh, const math::Size2 &txSize)
+    {
         const auto a(vts::area(mesh));
         area.internalTexture += (a.internalTexture * math::area(txSize));
         area.mesh += a.mesh;
@@ -339,16 +348,53 @@ struct MeshInfo {
     }
 };
 
+void remapTcToRegion(vts::SubMesh &sm, const vts::FaceOriginList &faceOrigin
+                     , const RegionInfo &ri)
+{
+    if (ri.regions.empty()) {
+        // nothing to inflate
+        return;
+    }
+
+    // remap texture coordinates from region coordinates to texture coordinates
+
+    std::vector<char> seen(sm.tc.size(), false);
+    const auto &remap([&](int index, const RegionInfo::Region &region) -> void
+    {
+        auto &iseen(seen[index]);
+        if (iseen) { return; }
+
+        // remap from region space to texture space
+        auto &tc(sm.tc[index]);
+        tc(0) *= region.size.width;
+        tc(1) *= region.size.height;
+
+        iseen = true;
+    });
+
+    auto ifaceOrigin(faceOrigin.begin());
+    for (const auto &face : sm.facesTc) {
+        // grab index to regions
+        const auto regionIndex(ri.faces[*ifaceOrigin++]);
+        const auto &region(ri.regions[regionIndex]);
+
+        for (const auto &tc : face) { remap(tc, region); }
+    }
+}
+
 MeshInfo measureMesh(const vts::NodeInfo &rfNode
                      , const vts::CsConvertor conv
                      , const vts::Mesh &mesh
+                     , const RegionInfo::list &regions
                      , const std::vector<math::Size2> &sizes)
 {
     MeshInfo mi;
 
     auto isizes(sizes.begin());
+    auto iregions(regions.begin());
     for (const auto &sm : mesh) {
         const auto &size(*isizes++);
+        const auto &ri(*iregions++);
 
         // make all faces valid by default
         vts::VertexMask valid(sm.vertices.size(), true);
@@ -369,8 +415,12 @@ MeshInfo measureMesh(const vts::NodeInfo &rfNode
 
         // clip mesh to node's extents
         // FIXME: implement mask application in clipping!
-        auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
+        vts::FaceOriginList faceOrigin;
+        auto osm(vts::clip(sm, projected, rfNode.extents(), valid
+                           , &faceOrigin));
         if (osm.faces.empty()) { continue; }
+
+        remapTcToRegion(osm, faceOrigin, ri);
 
         // at least one face survived remember
         mi.update(osm, size);
@@ -481,7 +531,7 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
     auto *pmim(&mim);
     const auto *pnodes(&nodes);
 
-    UTILITY_OMP(parallel for shared(pmim))
+    UTILITY_OMP(parallel for shared(pmim) schedule(dynamic))
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         const auto &node(*(*pnodes)[i]);
 
@@ -500,7 +550,8 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
         // compute mesh are in each RF node
         for (const auto &rfNode : nodes_) {
             const vts::CsConvertor conv(inputSrs_, rfNode.srs());
-            const auto mi(measureMesh(rfNode, conv, loader.mesh(), sizes));
+            const auto mi(measureMesh(rfNode, conv, loader.mesh()
+                                      , loader.regions(), sizes));
             if (mi) {
                 UTILITY_OMP(critical(slpk2vts_meshInfo_1))
                     (*pmim)[&rfNode] += mi;
@@ -605,10 +656,12 @@ private:
                       , const vts::NodeInfo &root
                       , vts::Lod lod, const vts::TileRange &tr
                       , const vts::Mesh &mesh
+                      , const RegionInfo::list &textureRegions
                       , const vts::opencv::Atlas &atlas);
 
     void cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
                  , const vts::Mesh &mesh
+                 , const RegionInfo::list &textureRegions
                  , const vts::opencv::Atlas &atlas);
 
     cv::Mat loadTexture(const slpk::Node &node, int index) const;
@@ -653,7 +706,7 @@ void Cutter::run(vt::ExternalProgress &progress)
     }());
 
     const std::size_t nlSize(nl.size());
-    UTILITY_OMP(parallel for)
+    UTILITY_OMP(parallel for schedule(dynamic))
     for (std::size_t i = 0; i < nlSize; ++i) {
         const auto &node(*nl[i]);
         cutNode(node, lodInfo);
@@ -719,12 +772,15 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
 
         // projested mesh/atlas
         vts::Mesh mesh;
+        RegionInfo::list textureRegions;
         vts::opencv::Atlas atlas;
 
         // and for each submesh
         std::size_t meshIndex(0);
+        auto iregions(loader.regions().begin());
         for (auto &sm : loader.mesh()) {
             const auto &texture(inAtlas.get(meshIndex++));
+            const auto &srcRi(*iregions++);
 
             // make all faces valid by default
             vts::VertexMask valid(sm.vertices.size(), true);
@@ -749,13 +805,25 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
 
             // clip mesh to node's extents
             // FIXME: implement actual mask application in clipping!
-            auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
+            vts::FaceOriginList faceOrigin;
+            auto osm(vts::clip(sm, projected, rfNode.extents(), valid
+                               , &faceOrigin));
             if (osm.faces.empty()) { continue; }
 
             // at least one face survived, remember
+
+            // get texturing info
+            textureRegions.emplace_back(srcRi.regions);
+            auto &tr(textureRegions.back());
+            // remap face regions (if any)
+            if (!srcRi.regions.empty()) {
+                for (const auto fo : faceOrigin) {
+                    tr.faces.push_back(srcRi.faces[fo]);
+                }
+            }
+
             mesh.submeshes.push_back(std::move(osm));
             atlas.add(texture);
-
         }
 
         // anything there?
@@ -776,7 +844,7 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
         // split to tiles
         LOG(info3) << "Splitting I3S node <" << node.id << "> to tiles in "
                    << lod << "/" << tr << ".";
-        splitToTiles(node, rfNode, lod, tr, mesh, atlas);
+        splitToTiles(node, rfNode, lod, tr, mesh, textureRegions, atlas);
     }
 }
 
@@ -784,8 +852,28 @@ void Cutter::splitToTiles(const slpk::Node &slpkNode
                           , const vts::NodeInfo &root
                           , vts::Lod lod, const vts::TileRange &tr
                           , const vts::Mesh &mesh
+                          , const RegionInfo::list &textureRegions
                           , const vts::opencv::Atlas &atlas)
 {
+    if (config_.tileExtents) {
+        // check for range validity
+        const auto &rootId(root.nodeId());
+        if (lod < config_.tileExtents->lod) {
+            LOG(info2)
+                << "Nothing to cut from SLPK node <" << slpkNode.id << ">.";
+        }
+
+        const auto gtr(vts::global(rootId, lod, tr));
+        const auto extents(vts::shiftRange(*config_.tileExtents, lod));
+
+        if (!vts::tileRangesOverlap(gtr, extents)) {
+            LOG(info2)
+                << "Nothing to cut from SLPK node <" << slpkNode.id << ">"
+                << ", gtr: " << gtr << ", extents: " << extents << ".";
+            return;
+        }
+    }
+
     typedef vts::TileRange::value_type Index;
     Index je(tr.ur(1));
     Index ie(tr.ur(0));
@@ -794,19 +882,27 @@ void Cutter::splitToTiles(const slpk::Node &slpkNode
         for (Index i = tr.ll(0); i <= ie; ++i) {
             vts::TileId tileId(lod, i, j);
             const auto node(root.child(tileId));
-            cutTile(slpkNode, node, mesh, atlas);
+            cutTile(slpkNode, node, mesh, textureRegions, atlas);
         }
     }
 }
 
 void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
-                     , const vts::Mesh &mesh, const vts::opencv::Atlas &atlas)
+                     , const vts::Mesh &mesh
+                     , const RegionInfo::list &textureRegions
+                     , const vts::opencv::Atlas &atlas)
 {
+
     // compute border condition (defaults to all available)
     vts::BorderCondition borderCondition;
     if (config_.tileExtents) {
         borderCondition = vts::inside(*config_.tileExtents, node.nodeId());
-        if (!borderCondition) { return; }
+        if (!borderCondition) {
+            LOG(info1)
+                << node.nodeId() << ": Nothing to cut from SLPK node <"
+                << slpkNode.id << ">.";
+            return;
+        }
     }
 
     // compute clip extents
@@ -830,7 +926,12 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
         faces += clipped.submeshes.back().faces.size();
     }
 
-    if (clipped.empty()) { return; }
+    if (clipped.empty()) {
+        LOG(info1)
+            << node.nodeId() << ": Nothing cut from SLPK node <"
+            << slpkNode.id << ">.";
+        return;
+    }
 
     LOG(info2)
         << node.nodeId() << ": Cut " << faces
@@ -838,7 +939,8 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
 
     // store in temporary storage
     const auto tileId(node.nodeId());
-    tools::repack(tileId, clipped, clippedAtlas);
+    (void) textureRegions;
+    tools::repack(tileId, clipped, clippedAtlas, textureRegions);
     tmpset_.store(tileId, clipped, clippedAtlas);
 
     // save mesh

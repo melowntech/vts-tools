@@ -51,6 +51,40 @@ inline math::Points2d denormalize(const math::Points2d &ps
     return out;
 }
 
+inline math::Points2d denormalize(Faces faces
+                                  , const math::Points2d &tc
+                                  , const cv::Size &texSize
+                                  , const TextureRegionInfo &regionInfo)
+{
+    if (regionInfo.regions.empty()) { return denormalize(tc, texSize); }
+
+    math::Points2d out(tc.size());
+    std::vector<char> seen(tc.size(), false);
+
+    const auto &remap([&](int index, const TextureRegionInfo::Region
+                          &region) -> void
+    {
+        auto &iseen(seen[index]);
+        if (iseen) { return; }
+
+        // remap from region space to texture space
+        auto &itc(tc[index]);
+        auto &otc(out[index]);
+        otc(0) = itc(0) * region.size.width * texSize.width;
+        otc(1) = (1.0 - itc(1)) * region.size.height * texSize.height;
+
+        iseen = true;
+    });
+
+    auto ifaceRegion(regionInfo.faces.begin());
+    for (const auto &face : faces) {
+        const auto &region(regionInfo.regions[*ifaceRegion++]);
+        for (const auto &index : face) { remap(index, region); }
+    }
+
+    return out;
+}
+
 inline math::Point2d normalize(const imgproc::UVCoord &uv
                                , const math::Size2 &texSize)
 {
@@ -60,10 +94,28 @@ inline math::Point2d normalize(const imgproc::UVCoord &uv
 
 class TextureInfo {
 public:
+    typedef std::vector<TextureInfo> list;
+
     TextureInfo(const SubMesh &sm, const cv::Mat &texture)
         : tc_(denormalize(sm.tc, texture.size()))
         , faces_(sm.facesTc), texture_(texture)
     {}
+
+    TextureInfo(const SubMesh &sm, const cv::Mat &texture
+                , const TextureRegionInfo &regionInfo)
+        : tc_(denormalize(sm.facesTc, sm.tc, texture.size(), regionInfo))
+        , faces_(sm.facesTc), texture_(texture)
+        , regionInfo_(regionInfo)
+    {
+        // prepare uv rectangles for regions
+        for (const auto &region : regionInfo_.regions) {
+            regionRects_.emplace_back();
+            auto &r(regionRects_.back());
+            const auto &rr(region.region);
+            r.update(rr.ll(0) * texture.cols, rr.ll(1) * texture.rows);
+            r.update(rr.ur(0) * texture.cols, rr.ur(1) * texture.rows);
+        }
+    }
 
     const math::Points2d& tc() const { return tc_; }
     const Faces& faces() const { return faces_; }
@@ -82,20 +134,27 @@ public:
         return tc_[index];
     }
 
-    typedef std::vector<TextureInfo> list;
-
     const Face& face(int faceIndex) const {
         return (faces_)[faceIndex];
     }
 
-    Face& ncface(int faceIndex) {
-        return (faces_)[faceIndex];
+    int faceRegion(int faceIndex) const {
+        return (regionInfo_.regions.empty()
+                ? 0 : regionInfo_.faces[faceIndex]);
+    }
+
+    const imgproc::UVRect* regionRect(int regionId) const {
+        if (regionRects_.empty()) { return nullptr; }
+        return &regionRects_[regionId];
     }
 
 private:
     math::Points2d tc_;
     Faces faces_;
     cv::Mat texture_;
+    const TextureRegionInfo regionInfo_;
+
+    std::vector<imgproc::UVRect> regionRects_;
 };
 
 namespace {
@@ -118,21 +177,28 @@ struct Component {
      */
     imgproc::UVRect rect;
 
+    /** Region this texturing component belongs to. Defaults to 0 for
+     *  non-regioned textures.
+     */
+    int regionId;
+
     typedef std::shared_ptr<Component> pointer;
     typedef std::vector<pointer> list;
     typedef std::set<pointer> set;
 
     Component() {}
 
-    Component(int findex, const Face &face, const TextureInfo &tx)
+    Component(int findex, const Face &face, const TextureInfo &tx
+              , int regionId = 0)
         : faces{findex}, indices{face(0), face(1), face(2)}
+        , regionId(regionId)
     {
         rect.update(tx.uvCoord(face, 0));
         rect.update(tx.uvCoord(face, 1));
         rect.update(tx.uvCoord(face, 2));
     }
 
-    void add(int findex, const Face &face, const TextureInfo &tx) {
+    void add(int findex, const Face &face, const TextureInfo &tx)  {
         faces.insert(findex);
         indices.insert({ face(0), face(1), face(2) });
 
@@ -148,7 +214,8 @@ struct Component {
         rect.update(other.rect.max);
     }
 
-    void copy(cv::Mat &tex, const cv::Mat &texture) const;
+    void copy(cv::Mat &tex, const cv::Mat &texture, const TextureInfo &tx)
+        const;
 
     imgproc::UVCoord adjustUV(const math::Point2 &p) const {
         imgproc::UVCoord c(p(0), p(1));
@@ -182,10 +249,70 @@ void clipToUpperBound(int limit, int &spos, int &ssize, int &dsize
     dsize -= diff;
 }
 
+void copyFromRegion(const imgproc::UVRect &regionRect
+                    , const imgproc::UVRect &rect
+                    , cv::Mat &tex, const cv::Mat &texture)
+{
+    (void) regionRect;
+    (void) rect;
+    (void) tex;
+    (void) texture;
+
+    LOG(info4)
+        << "About to copy regional patch: src: "
+        << rect.width() << "x" << rect.height()
+        << " " << rect.x() << " " << rect.y()
+        << "; dst: "
+        << rect.width() << "x" << rect.height()
+        << " " << rect.packX << " " << rect.packY
+        << "; region: "
+        << regionRect.width() << "x" << regionRect.height()
+        << " " << regionRect.x() << " " << regionRect.y()
+        ;
+
+
+    const auto wrap([](int pos, int origin, int size) -> int
+    {
+        auto mod(pos % size);
+        if (mod < 0) { mod += size; }
+        return origin + mod;
+    });
+
+    const math::Point2i regionOrigin(regionRect.x(), regionRect.y());
+    const math::Size2 regionSize(regionRect.width(), regionRect.height());
+    const math::Size2 size(rect.width(), rect.height());
+
+    const math::Point2i diff(regionOrigin(0) - rect.x()
+                             , regionOrigin(1) - rect.y());
+
+    // copy data
+    for (int j(0), je(size.height); j != je; ++j) {
+        const auto jsrc(wrap(j - diff(1), regionOrigin(1), regionSize.height));
+
+        if ((jsrc < 0) || (jsrc >= texture.rows)) { continue; }
+
+        for (int i(0), ie(size.width); i != ie; ++i) {
+            const auto isrc
+                (wrap(i - diff(0), regionOrigin(0), regionSize.width));
+
+            if ((isrc < 0) || (isrc >= texture.cols)) { continue; }
+
+            tex.at<cv::Vec3b>(rect.packY + j, rect.packX + i)
+                = texture.at<cv::Vec3b>(jsrc, isrc);
+        }
+    }
+}
+
 } // namespace
 
-void Component::copy(cv::Mat &tex, const cv::Mat &texture) const
+void Component::copy(cv::Mat &tex, const cv::Mat &texture
+                     , const TextureInfo &tx) const
 {
+    if (const auto *regionRect = tx.regionRect(regionId)) {
+        copyFromRegion(*regionRect, rect, tex, texture);
+        return;
+    }
+
     cv::Rect src(rect.x(), rect.y(), rect.width(), rect.height());
     cv::Rect dst(rect.packX, rect.packY, rect.width(), rect.height());
 
@@ -223,9 +350,8 @@ struct ComponentInfo {
         const auto &texture(tx->texture());
         cv::Mat tex(ts.height, ts.width, texture.type());
         tex = cv::Scalar(0, 0, 0);
-        // tex = cv::Scalar(0, 0, 255);
         for (const auto &c : components) {
-            c->copy(tex, texture);
+            c->copy(tex, texture, *tx);
         }
         return tex;
     }
@@ -272,6 +398,7 @@ ComponentInfo::ComponentInfo(const TileId &tileId, int id, TextureInfo &tx)
 
     for (std::size_t i(0), e(faces.size()); i != e; ++i) {
         const auto &face(faces[i]);
+        const auto regionId(tx.faceRegion(i));
 
         FaceComponents fc =
             { { &tMap[face(0)], &tMap[face(1)], &tMap[face(2)] } };
@@ -313,7 +440,7 @@ ComponentInfo::ComponentInfo(const TileId &tileId, int id, TextureInfo &tx)
             // create new component
             components.insert
                 (fMap[i] = *fc[0] = *fc[1] = *fc[2]
-                 = std::make_shared<Component>(i, face, tx));
+                 = std::make_shared<Component>(i, face, tx, regionId));
         }
     }
 
@@ -324,6 +451,17 @@ ComponentInfo::ComponentInfo(const TileId &tileId, int id, TextureInfo &tx)
         }
 
         c->rect.inflate(1.0);
+
+        std::set<int> regions;
+        for (const auto &face : c->faces) {
+            regions.insert(tx.faceRegion(face));
+        }
+
+        if (regions.size() != 1) {
+            LOGTHROW(info4, std::runtime_error)
+                << "Multiple regions in single component: "
+                << utility::join(regions, ",", "-");
+        }
     }
 }
 
@@ -339,6 +477,66 @@ void repack(const TileId &tileId, vts::Mesh &mesh, opencv::Atlas &atlas)
     for (auto &sm : mesh) {
         // prepare texturing stufff
         TextureInfo tx(sm, atlas.get(idx));
+        ComponentInfo cinfo(tileId, idx, tx);
+
+        // pack patches into new atlas
+        auto packedSize([&]() -> math::Size2
+        {
+            // pack the patches
+            imgproc::RectPacker packer;
+            for (auto &c : cinfo.components) {
+                packer.addRect(&c->rect);
+            }
+            packer.pack();
+            return math::Size2(packer.width(), packer.height());
+        }());
+
+        atlas.set(idx, cinfo.composeTexture(packedSize));
+        sm.tc = cinfo.composeTc(packedSize);
+
+        ++idx;
+    }
+}
+
+// TODO: implement me
+void repack(const TileId &tileId, Mesh &mesh, opencv::Atlas &atlas
+            , const TextureRegionInfo::list &textureRegions)
+{
+    utility::expect(mesh.submeshes.size() == atlas.size()
+                    , "Tile %s: Number of submeshes (%d) is different from "
+                    "texture count (%d).", tileId, mesh.submeshes.size()
+                    , atlas.size());
+    utility::expect(mesh.submeshes.size() == atlas.size()
+                    , "Tile %s: Number of submeshes (%d) is different from "
+                    "texture region info count (%d).", tileId
+                    , mesh.submeshes.size(), textureRegions.size());
+
+    int idx(0);
+    auto iregions(textureRegions.begin());
+    for (auto &sm : mesh) {
+        const auto &textureRegion(*iregions++);
+
+        if (!textureRegion.regions.empty()) {
+            std::vector<int> tcRegions(sm.tc.size(), -1);
+            auto itxFaces(textureRegion.faces.begin());
+            for (const auto &f : sm.facesTc) {
+                const auto txFace(*itxFaces++);
+                for (const auto tc : f) {
+                    auto &tcRegion(tcRegions[tc]);
+                    if (tcRegion < 0) {
+                        tcRegion = txFace;
+                    } else if (tcRegion != txFace) {
+                        LOG(warn4)
+                            << "Texture coordinate " << tc
+                            << " belongs to two components: "
+                            << tcRegion << " and " << txFace << ".";
+                    }
+                }
+            }
+        }
+
+        // prepare texturing stufff
+        TextureInfo tx(sm, atlas.get(idx), textureRegion);
         ComponentInfo cinfo(tileId, idx, tx);
 
         // pack patches into new atlas
