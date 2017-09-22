@@ -49,5 +49,5 @@ buildsys_binary(slpk2vts)
 
 # ------------------------------------------------------------------------
 # installation
-install(TARGETS vef2vts
+install(TARGETS vef2vts slpk2vts
   RUNTIME DESTINATION bin COMPONENT vts-tools)
