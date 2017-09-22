@@ -39,6 +39,12 @@ include_directories(${LIBPROC_INCLUDE_DIR})
 find_package(Protobuf REQUIRED)
 include_directories(${PROTOBUF_INCLUDE_DIRS})
 
+# OpenSceneGraph, optional
+find_package(OpenSceneGraph COMPONENTS osgDB osgViewer)
+if(OPENSCENEGRAPH_FOUND)
+  include_directories(${OPENSCENEGRAPH_INCLUDE_DIRS})
+endif()
+
 # dependencies
 add_subdirectory(src/dbglog)
 add_subdirectory(src/utility)

@@ -292,6 +292,9 @@ double bestLod(const Config &config
 {
     const double texelArea(area.mesh / area.internalTexture);
 
+    LOG(info3) << "<" << rfNode.srs() << ">: texel size: "
+               << std::sqrt(texelArea) << ".";
+
     const auto optimalTileArea
         (math::area(config.optimalTextureSize) * texelArea);
     const auto optimalTileCount(rfNode.extents().area()

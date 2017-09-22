@@ -48,6 +48,26 @@ buildsys_target_compile_definitions(slpk2vts ${MODULE_DEFINITIONS})
 buildsys_binary(slpk2vts)
 
 # ------------------------------------------------------------------------
+# osg2vts tool
+if(OPENSCENEGRAPH_FOUND)
+  message(STATUS "Building osg2vts tool.")
+
+  define_module(BINARY osg2vts
+    DEPENDS vtstools ${common_DEPENDS}
+    OPENSCENEGRAPH)
+
+  set(osg2vts_SOURCES
+    osg2vts.cpp)
+  add_executable(osg2vts osg2vts.cpp)
+  target_link_libraries(osg2vts ${MODULE_LIBRARIES})
+  buildsys_target_compile_definitions(osg2vts ${MODULE_DEFINITIONS})
+  buildsys_binary(osg2vts)
+else()
+  message(STATUS "Not building osg2vts tool (install OpenSceneGraph dev "
+    "libraries to build).")
+endif()
+
+# ------------------------------------------------------------------------
 # installation
 install(TARGETS vef2vts
   RUNTIME DESTINATION bin COMPONENT vts-tools)
