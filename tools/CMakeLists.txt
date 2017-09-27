@@ -45,6 +45,10 @@ if(OPENSCENEGRAPH_FOUND)
   include_directories(${OPENSCENEGRAPH_INCLUDE_DIRS})
 endif()
 
+# Asset import library for loading mesh files
+# (get it with 'apt-get install libassimp-dev')
+find_package(Assimp REQUIRED)
+
 # dependencies
 add_subdirectory(src/dbglog)
 add_subdirectory(src/utility)

@@ -1,5 +1,6 @@
 set(common_DEPENDS
-  dbglog>=1.4 vts-libs>=2.3 service>=1.6
+  dbglog>=1.4 vts-libs>=2.5 service>=1.6
+  vts-libs-tools-support>=2.5
   )
 
 # support library for VTS tools
@@ -42,10 +43,22 @@ define_module(BINARY slpk2vts
 set(slpk2vts_SOURCES
   slpk2vts.cpp)
 
-add_executable(slpk2vts slpk2vts.cpp)
+add_executable(slpk2vts ${slpk2vts_SOURCES})
 target_link_libraries(slpk2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(slpk2vts ${MODULE_DEFINITIONS})
 buildsys_binary(slpk2vts)
+
+# ------------------------------------------------------------------------
+# ai2vts tool
+define_module(BINARY ai2obj
+  DEPENDS vtstools ${common_DEPENDS})
+set(ai2obj_SOURCES
+  ai2obj.cpp)
+
+add_executable(ai2obj ${ai2obj_SOURCES})
+target_link_libraries(ai2obj ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(ai2obj ${MODULE_DEFINITIONS})
+buildsys_binary(ai2obj)
 
 # ------------------------------------------------------------------------
 # osg2vts tool
