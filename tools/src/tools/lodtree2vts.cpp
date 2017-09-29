@@ -250,6 +250,7 @@ void Model::load(const roarchive::RoArchive &archive
     LOG(info2) << "Loading model " << id << " (" << path << ").";
 
     Assimp::Importer imp;
+    imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
     const auto &scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     // TODO: error checking
@@ -259,6 +260,9 @@ void Model::load(const roarchive::RoArchive &archive
         vts::SubMesh submesh;
 
         aiMesh *aimesh = scene->mMeshes[m];
+        // skip
+        if (!aimesh->mNumFaces) { continue; }
+
         for (unsigned i = 0; i < aimesh->mNumVertices; i++)
         {
             math::Point3 pt(origin + lt::point3(aimesh->mVertices[i]));
@@ -641,6 +645,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
     fs::path path(tile.node->modelPath);
 
     Assimp::Importer imp;
+    imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
     const auto *scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
 
     tile.extents = math::Extents2(math::InvalidExtents{});
@@ -650,6 +655,9 @@ void calcModelExtents(const roarchive::RoArchive &archive
     for (unsigned m = 0; m < scene->mNumMeshes; m++)
     {
         aiMesh *mesh = scene->mMeshes[m];
+
+        // skip
+        if (!mesh->mNumFaces) { continue; }
 
         math::Points3d physPts(mesh->mNumVertices);
         for (unsigned i = 0; i < mesh->mNumVertices; i++)
@@ -707,10 +715,8 @@ int LodTree2Vts::run()
     // parse the XMLs
     lt::LodTreeExport lte(archive, offset);
 
-    lte.origin += offset;
-
     // TODO: error checking (empty?)
-    auto inputSrs(geo::SrsDefinition::fromString(lte.srs));
+    auto inputSrs(lte.srs);
 
     // find a suitable reference frame division node
     auto sdsNode =
