@@ -89,11 +89,13 @@ struct Config
     double offsetX, offsetY, offsetZ;
 
     double zShift;
+    double clipMargin;
 
     Config()
         : textureQuality(85), maxLevel(-1)
         , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
         , offsetX(0.), offsetY(0.), offsetZ(0.), zShift(0.0)
+        , clipMargin(1.0 / 128.)
     {}
 };
 
@@ -181,6 +183,11 @@ void LodTree2Vts::configuration(po::options_description &cmdline
          ->default_value(config_.zShift)->required()
          , "Manual height adjustment (value is "
          "added to z component of all vertices).")
+
+        ("clipMargin", po::value(&config_.clipMargin)
+         ->default_value(config_.clipMargin)
+         , "Margin (in fraction of tile dimensions) added to tile extents in "
+         "all 4 directions.")
 
         ;
 
@@ -478,10 +485,9 @@ Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
     const vts::CsConvertor sds2DstPhy
         (nodeInfo.srs(), referenceFrame().model.physicalSrs);
 
-    /*auto clipExtents(vts::inflateTileExtents
-                     (nodeInfo.extents(), config_.clipMargin
-                      , borderCondition, config_.borderClipMargin));*/
-    auto clipExtents(nodeInfo.extents());
+    const auto clipExtents
+        (vts::inflateTileExtents
+         (nodeInfo.extents(), config_.clipMargin));
 
     // output
     Encoder::TileResult result;
