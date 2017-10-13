@@ -140,9 +140,11 @@ int Ai2Obj::run()
     LOG(info4) << "Opening Assimp-supported file at " << input_ << ".";
 
     Assimp::Importer imp;
+    imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
+
     const auto scene(tools::loadAssimpScene(imp, input_));
     const auto &mesh(std::get<0>(scene));
-    const auto &atlas(std::get<1>(scene));
+    const auto &textures(std::get<1>(scene));
 
     if (!fs::create_directories(output_) && !overwrite_) {
         std::cerr << "Output path " << output_ << " already exists."
@@ -156,11 +158,12 @@ int Ai2Obj::run()
         const auto mtlPath(output_ / str(boost::format("%d.mtl") % i));
 
         // save mesh
-        saveSubMeshAsObj(meshPath, mesh.submeshes[i], i, atlas.get()
+        saveSubMeshAsObj(meshPath, mesh.submeshes[i], i, nullptr
                          , mtlPath.filename().string());
 
         // save texture
-        atlas->write(texPath, i);
+        auto tex(cv::imread(textures[i].string(), CV_LOAD_IMAGE_COLOR));
+        cv::imwrite(texPath.string(), tex, {});
 
         // save material file
         writeMtl(mtlPath, texPath.filename().string());
