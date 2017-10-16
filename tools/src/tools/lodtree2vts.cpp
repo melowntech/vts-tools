@@ -139,10 +139,10 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
     cmdline.add_options()
         ("input", po::value(&input_)->required()
-         , "Path to LODTreeExport.xml input file.")
+         , "Path to the input archive containing LODTreeExport.xml file.")
 
         ("output", po::value(&output_)->required()
-         , "Path to output (vts) tile set.")
+         , "Path to the output (vts) tile set.")
 
         ("overwrite", "Existing tile set gets overwritten if set.")
 
@@ -708,10 +708,10 @@ void calcModelExtents(const roarchive::RoArchive &archive
     }
 }
 
-
 int LodTree2Vts::run()
 {
-    roarchive::RoArchive archive(input_, lt::mainXmlFileName);
+    roarchive::RoArchive archive
+        (input_, { lt::mainXmlFileName, lt::alternativeXmlFileName });
 
     math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
     if (norm_2(offset) > 0.) {
