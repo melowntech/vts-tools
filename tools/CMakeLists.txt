@@ -42,11 +42,11 @@ include_directories(${PROTOBUF_INCLUDE_DIRS})
 # dependencies
 add_subdirectory(src/dbglog)
 add_subdirectory(src/utility)
+add_subdirectory(src/service)
 add_subdirectory(src/math)
 add_subdirectory(src/geometry)
 add_subdirectory(src/imgproc)
 add_subdirectory(src/jsoncpp)
-add_subdirectory(src/service)
 add_subdirectory(src/geo)
 add_subdirectory(src/gdal-drivers)
 add_subdirectory(src/half)
@@ -63,3 +63,6 @@ add_subdirectory(src/slpk)
 
 # tools
 add_subdirectory(src/tools)
+
+# for testing
+add_subdirectory(src/utility/tools EXCLUDE_FROM_ALL)
