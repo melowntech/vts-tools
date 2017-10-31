@@ -490,9 +490,11 @@ private:
 void Cutter::run(/**vt::ExternalProgress &progress*/)
 {
     UTILITY_OMP(parallel for)
-    for (std::size_t i = 0; i < windows_.size(); ++i) {
-        windowCut(windows_[i]);
-    }
+        for (std::size_t i = 0; i < windows_.size(); ++i) {
+            windowCut(windows_[i]);
+        }
+
+    ts_.flush();
 }
 
 cv::Mat Cutter::loadTexture(const fs::path &path) const
