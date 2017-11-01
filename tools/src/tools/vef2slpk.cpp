@@ -30,7 +30,10 @@
 #include <algorithm>
 #include <iterator>
 
+#include <boost/optional.hpp>
 #include <boost/optional/optional_io.hpp>
+#include <boost/utility/in_place_factory.hpp>
+#include <boost/lexical_cast.hpp>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -92,7 +95,6 @@ struct Config {
     double clipMargin;
     bool resume;
     bool keepTmpset;
-
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
@@ -625,6 +627,25 @@ void Cutter::tileCut(const vts::TileId &tileId, const vts::Mesh &mesh
     ts_.store(tileId, clipped, clippedAtlas);
 }
 
+struct NodeId {
+    std::vector<int> path;
+
+    NodeId() {}
+
+    NodeId child(int which) const {
+        NodeId nodeId(*this);
+        nodeId.path.push_back(which);
+        return nodeId;
+    }
+};
+
+template<typename CharT, typename Traits>
+inline std::basic_ostream<CharT, Traits>&
+operator<<(std::basic_ostream<CharT, Traits> &os, const NodeId &nodeId)
+{
+    return os << utility::join(nodeId.path, "-", "root");
+}
+
 class Generator {
 public:
     Generator(const tools::TmpTileset &ts, const Config &config
@@ -638,7 +659,8 @@ public:
     void operator()(/**vt::ExternalProgress &progress*/);
 
 private:
-    boost::optional<slpk::NodeReference> process(const vts::TileId &tileId);
+    boost::optional<slpk::NodeReference>
+    process(const vts::TileId &tileId, NodeId nodeId);
 
     const tools::TmpTileset &ts_;
     const Config &config_;
@@ -670,7 +692,7 @@ struct MeshVertices {
 };
 
 boost::optional<slpk::NodeReference>
-Generator::process(const vts::TileId &tileId)
+Generator::process(const vts::TileId &tileId, NodeId nodeId)
 {
     struct TIDGuard {
         TIDGuard(const std::string &id)
@@ -689,7 +711,9 @@ Generator::process(const vts::TileId &tileId)
 
     boost::optional<slpk::NodeReference> onr;
     if (ti_.get(tileId)) {
-        LOG(info3) << "Generating tile " << tileId;
+        LOG(info3)
+            << "Generating node <" << nodeId << "> from tile " << tileId
+            << ".";
 
         vts::Mesh::pointer mesh;
         vts::Atlas::pointer atlas;
@@ -706,6 +730,7 @@ Generator::process(const vts::TileId &tileId)
         }
 
         auto &nodeReference(*(onr = boost::in_place()));
+        nodeReference.id = boost::lexical_cast<std::string>(nodeId);
 
         const auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
         LOG(info4) << "mbs: " << mbs.center << ", " << mbs.radius;
@@ -719,15 +744,19 @@ Generator::process(const vts::TileId &tileId)
     }
 
     // proces children -> go down
-    slpk::NodeReference::list nodeReferences;;
+    slpk::NodeReference::list nodeReferences;
+    int childIndex(0);
     for (auto child : vts::children(tileId)) {
         UTILITY_OMP(task)
         {
-            if (auto nodeReference = process(child)) {
+            if (auto nodeReference
+                = process(child, nodeId.child(childIndex)))
+            {
                 UTILITY_OMP(critical(vef2slpk_process_1))
                    nodeReferences.push_back(std::move(*nodeReference));
             }
         }
+        ++childIndex;
     }
 
     // done
@@ -739,7 +768,7 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
     UTILITY_OMP(parallel)
     UTILITY_OMP(single)
     {
-        process({});
+        process({}, {});
     }
 }
 
