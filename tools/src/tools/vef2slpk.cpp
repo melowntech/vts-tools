@@ -62,9 +62,11 @@
 #include "vts-libs/tools/progress.hpp"
 #include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/meshop.hpp"
+#include "vts-libs/vts/tileop.hpp"
 
 #include "vef/reader.hpp"
 #include "slpk/reader.hpp"
+#include "miniball/miniball.hpp"
 
 #include "./tmptileset.hpp"
 #include "./repackatlas.hpp"
@@ -86,6 +88,7 @@ struct Config {
     math::Size2 optimalTextureSize;
     slpk::SpatialReference spatialReference;
 
+    vts::SubmeshMergeOptions smMergeOptions;
     double clipMargin;
     bool resume;
     bool keepTmpset;
@@ -217,27 +220,31 @@ struct Setup {
     vts::MeshArea meshArea;
     std::size_t faceCount;
     std::size_t depth;
+    vts::Lod maxLod;
 
-    Setup() : faceCount(), depth() {}
+    Setup() : faceCount(), depth(), maxLod() {}
 };
 
-math::Extents2 makeSquare(math::Extents2 extents)
+/** Makes extents prettier:
+ *
+ *   * center placed at integral coordinates
+ *   * integral dimensions
+ *   * square footprint
+ */
+math::Extents2 prettifyExtents(const math::Extents2 &extents)
 {
+    // measure extents
     auto size(math::size(extents));
+    auto center(math::center(extents));
+    center(0) = std::round(center(0));
+    center(1) = std::round(center(0));
 
-    if (size.width > size.height) {
-        // center in y direction
-        auto c((extents.ll(1) + extents.ur(1)) / 2.0);
-        extents.ll(1) = c - (size.width / 2.0);
-        extents.ur(1) = c + (size.width / 2.0);
-    } else if (size.height > size.width) {
-        // center in x direction
-        auto c((extents.ll(0) + extents.ur(0)) / 2.0);
-        extents.ll(0) = c - (size.height / 2.0);
-        extents.ur(0) = c + (size.height / 2.0);
-    }
+    auto dim(std::max
+             (std::ceil(size.width / 2.0) + 1.0
+              , std::ceil(size.height / 2.0) + 1.0));
 
-    return extents;
+    return { center(0) - dim, center(1) - dim
+            , center(0) + dim, center(1) + dim };
 }
 
 /** Measures whole mesh extents from coarsest data.
@@ -329,15 +336,11 @@ Setup toEnu(const Config &config, const vef::Archive &archive)
     setup.srcSrs = *archive.manifest().srs;
     setup.dstSrs = config.spatialReference.srs();
 
-    for (const auto &lw : archive.manifest().windows) {
-        setup.depth = std::max(setup.depth, lw.lods.size());
-    }
-
     if (setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
         // find, it's ENU -> measure mesh in src/work SRS
         auto mi(measureMeshes(archive, geo::CsConvertor()));
 
-        setup.workExtents = makeSquare(mi.extents);
+        setup.workExtents = mi.extents;
         setup.workSrs = setup.srcSrs;
         setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
         setup.meshArea = mi.area;
@@ -363,7 +366,7 @@ Setup toEnu(const Config &config, const vef::Archive &archive)
     // measure mesh in work SRS
     auto mi(measureMeshes(archive, setup.src2work));
 
-    setup.workExtents = makeSquare(mi.extents);
+    setup.workExtents = mi.extents;
     setup.meshArea = mi.area;
     setup.faceCount = mi.faceCount;
 
@@ -378,42 +381,40 @@ double pixelArea(const vts::MeshArea &area) {
     return area.mesh / ta;
 }
 
-vts::Lod treeDepth(const Setup &setup, const Config &config)
+Setup makeSetup(const Config &config, const vef::Archive &archive)
 {
+    auto setup(toEnu(config, archive));
+    LOG(info4) << "setup.workExtents: " << setup.workExtents;
+    setup.workExtents = prettifyExtents(setup.workExtents);
+    LOG(info4) << "setup.workExtents: " << setup.workExtents;
+
+    for (const auto &lw : archive.manifest().windows) {
+        setup.depth = std::max(setup.depth, lw.lods.size());
+    }
+
     // compute area of one pixel (meter^2/pixel)
     auto px(pixelArea(setup.meshArea));
 
-    LOG(info4) << "px: " << px;
-
     // optimal tile size in meters^2
-    auto tileArea(px * config.optimalTextureSize.width
-        * config.optimalTextureSize.height);
-
-    LOG(info4) << "tileArea: " << tileArea;
+    auto tileArea(px
+                  * config.optimalTextureSize.width
+                  * config.optimalTextureSize.height);
 
     // we made work extents square -> we can use scene area as is
     const auto sceneSize(math::size(setup.workExtents));
     const auto paneArea(math::area(sceneSize));
 
-    LOG(info4) << "sceneSize: " << sceneSize;
-    LOG(info4) << "paneArea: " << paneArea;
-
     const auto tileCount(paneArea / tileArea);
-    LOG(info4) << "tileCount: " << tileCount;
 
     const auto optimalLod(0.5 * std::log2(tileCount));
-    LOG(info4) << "optimalLod: " << optimalLod;
 
-    auto maxLod(std::round(optimalLod));
+    setup.maxLod = std::round(optimalLod);
 
-    if (setup.depth > (maxLod + 1)) {
-        maxLod = setup.depth - 1;
-        LOG(info4) << "roundedLod: " << maxLod << " (fixed by input depth).";
-    } else {
-        LOG(info4) << "roundedLod: " << maxLod;
+    if (setup.depth > (setup.maxLod + 1)) {
+        setup.maxLod = setup.depth - 1;
     }
 
-    return maxLod;
+    return setup;
 }
 
 /** Per-window record to ease parallel processing.
@@ -457,14 +458,13 @@ inline void warpInPlace(vts::Mesh &mesh, const geo::CsConvertor &conv)
 class Cutter {
 public:
     Cutter(tools::TmpTileset &ts, const vef::Archive &archive
-           , const Config &config, const Setup &setup
-           , vts::Lod maxLod)
+           , const Config &config, const Setup &setup)
         : ts_(ts), archive_(archive)
         , config_(config), setup_(setup)
-        , maxLod_(maxLod), windows_(windowRecordList(archive_, maxLod_))
+        , windows_(windowRecordList(archive_, setup.maxLod))
     {}
 
-    void run(/**vt::ExternalProgress &progress*/);
+    void operator()(/**vt::ExternalProgress &progress*/);
 
 private:
     void windowCut(const WindowRecord &window);
@@ -482,12 +482,11 @@ private:
     const vef::Archive &archive_;
     const Config &config_;
     const Setup &setup_;
-    vts::Lod maxLod_;
 
     WindowRecord::list windows_;
 };
 
-void Cutter::run(/**vt::ExternalProgress &progress*/)
+void Cutter::operator()(/**vt::ExternalProgress &progress*/)
 {
     UTILITY_OMP(parallel for)
         for (std::size_t i = 0; i < windows_.size(); ++i) {
@@ -568,6 +567,8 @@ void Cutter::windowCut(const WindowRecord &wr)
     }
 
     auto tr(computeTileRange(setup_, wr.lod, computeExtents(mesh)));
+    LOG(info3) << "Splitting window " << window.path
+               << " to tiles in " << wr.lod << "/" << tr << ".";
     splitToTiles(wr.lod, tr, mesh, atlas);
 }
 
@@ -575,8 +576,6 @@ void Cutter::splitToTiles(vts::Lod lod, const vts::TileRange &tr
                           , const vts::Mesh &mesh
                           , const vts::opencv::Atlas &atlas)
 {
-    LOG(info3) << "Splitting to tiles in " << lod << "/" << tr << ".";
-
     for (auto j(tr.ll(1)), je(tr.ur(1)); j <= je; ++j) {
         for (auto i(tr.ll(0)), ie(tr.ur(0)); i <= ie; ++i) {
             tileCut(vts::TileId(lod, i, j), mesh, atlas);
@@ -604,7 +603,6 @@ void Cutter::tileCut(const vts::TileId &tileId, const vts::Mesh &mesh
     auto extents
         (vts::inflateTileExtents
          (tileExtents(setup_.workExtents, tileId), config_.clipMargin));
-    LOG(info4) << tileId << ": tile extents: " << extents;
 
     vts::Mesh clipped;
     vts::opencv::Atlas clippedAtlas(0); // PNG!
@@ -627,6 +625,124 @@ void Cutter::tileCut(const vts::TileId &tileId, const vts::Mesh &mesh
     ts_.store(tileId, clipped, clippedAtlas);
 }
 
+class Generator {
+public:
+    Generator(const tools::TmpTileset &ts, const Config &config
+              , const Setup &setup)
+        : ts_(ts), config_(config), setup_(setup)
+        , ti_(ts.tileIndex()), fullTree_(ti_)
+    {
+        fullTree_.complete();
+    }
+
+    void operator()(/**vt::ExternalProgress &progress*/);
+
+private:
+    boost::optional<slpk::NodeReference> process(const vts::TileId &tileId);
+
+    const tools::TmpTileset &ts_;
+    const Config &config_;
+    const Setup &setup_;
+
+    vts::TileIndex ti_;
+    vts::TileIndex fullTree_;
+};
+
+struct MeshVertices {
+    typedef double value_type;
+    typedef miniball::Point3_<value_type> Point3;
+
+    MeshVertices(const vts::Mesh &mesh)
+        : mesh(mesh)
+    {
+        for (const auto &sm : mesh) {
+            for (const auto &v : sm.vertices) {
+                points.push_back(v);
+            }
+        }
+    }
+
+    std::size_t size() const { return points.size(); }
+    Point3 operator[](std::size_t i) const { return points[i]; }
+
+    const vts::Mesh &mesh;
+    std::vector<Point3> points;
+};
+
+boost::optional<slpk::NodeReference>
+Generator::process(const vts::TileId &tileId)
+{
+    struct TIDGuard {
+        TIDGuard(const std::string &id)
+            : old(dbglog::thread_id())
+        {
+            dbglog::thread_id(id);
+        }
+        ~TIDGuard() { try { dbglog::thread_id(old); } catch (...) {} }
+
+        const std::string old;
+    };
+
+    if (!fullTree_.get(tileId)) { return boost::none; }
+
+    TIDGuard tg(str(boost::format("tile:%s") % tileId));
+
+    boost::optional<slpk::NodeReference> onr;
+    if (ti_.get(tileId)) {
+        LOG(info3) << "Generating tile " << tileId;
+
+        vts::Mesh::pointer mesh;
+        vts::Atlas::pointer atlas;
+
+        {
+            // TODO: generate
+            const auto loaded(ts_.load(tileId, config_.textureQuality));
+
+            // merge submeshes
+            std::tie(mesh, atlas)
+                = vts::mergeSubmeshes
+                (tileId, std::get<0>(loaded), std::get<1>(loaded)
+                 , config_.textureQuality, config_.smMergeOptions);
+        }
+
+        auto &nodeReference(*(onr = boost::in_place()));
+
+        const auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
+        LOG(info4) << "mbs: " << mbs.center << ", " << mbs.radius;
+        nodeReference.mbs.x = mbs.center(0);
+        nodeReference.mbs.y = mbs.center(1);
+        nodeReference.mbs.z = mbs.center(2);
+        nodeReference.mbs.r = mbs.radius;
+
+        // TODO: fill node reference
+        (void) nodeReference;
+    }
+
+    // proces children -> go down
+    slpk::NodeReference::list nodeReferences;;
+    for (auto child : vts::children(tileId)) {
+        UTILITY_OMP(task)
+        {
+            if (auto nodeReference = process(child)) {
+                UTILITY_OMP(critical(vef2slpk_process_1))
+                   nodeReferences.push_back(std::move(*nodeReference));
+            }
+        }
+    }
+
+    // done
+    return onr;
+}
+
+void Generator::operator()(/**vt::ExternalProgress &progress*/)
+{
+    UTILITY_OMP(parallel)
+    UTILITY_OMP(single)
+    {
+        process({});
+    }
+}
+
 int Vef2Slpk::run()
 {
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
@@ -634,11 +750,15 @@ int Vef2Slpk::run()
     ts.keep(config_.keepTmpset);
 
     if (config_.resume) {
+#if 0
         // TODO: implement me
 
         // all done
         LOG(info4) << "All done.";
         return EXIT_SUCCESS;
+#endif
+        LOG(fatal) << "Resume not implemented yet.";
+        return EXIT_FAILURE;
     }
 
     // load input manifests
@@ -651,18 +771,10 @@ int Vef2Slpk::run()
     }
 
     // measure mesh extents
-    auto setup(toEnu(config_, input));
-    auto maxLod(treeDepth(setup, config_));
+    auto setup(makeSetup(config_, input));
 
-    LOG(info4) << "src: " << setup.srcSrs;
-    LOG(info4) << "work: " << setup.workSrs;
-    LOG(info4) << "dst: " << setup.dstSrs;
-    LOG(info4) << "extents: " << setup.workExtents;
-    LOG(info4) << "face count: " << setup.faceCount;
-    LOG(info4) << "maxlod: " << maxLod;
-
-    Cutter cutter(ts, input, config_, setup, maxLod);
-    cutter.run(/* progress */);
+    Cutter(ts, input, config_, setup)(/* progress */);
+    Generator(ts, config_, setup)(/* progress */);
 
     // all done
     LOG(info4) << "All done.";

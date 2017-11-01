@@ -366,7 +366,7 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
 }
 
 std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-TmpTileset::load(const vts::TileId &tileId, int quality)
+TmpTileset::load(const vts::TileId &tileId, int quality) const
 {
     std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer> tile;
     auto &mesh(std::get<0>(tile));

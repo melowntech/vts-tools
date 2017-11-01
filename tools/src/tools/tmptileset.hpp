@@ -35,6 +35,7 @@
 
 #include <mutex>
 
+#include <boost/noncopyable.hpp>
 #include <boost/filesystem/path.hpp>
 
 #include "vts-libs/vts.hpp"
@@ -44,7 +45,7 @@
 
 namespace vtslibs { namespace vts { namespace tools {
 
-class TmpTileset {
+class TmpTileset : boost::noncopyable {
 public:
     TmpTileset(const boost::filesystem::path &root
                , bool create = true);
@@ -65,7 +66,7 @@ public:
      * \return tile's mesh and hybrid atlas as a tupple
      */
     std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-    load(const vts::TileId &tileId, int quality);
+    load(const vts::TileId &tileId, int quality) const;
 
     /** Flushes data to disk.
      */
