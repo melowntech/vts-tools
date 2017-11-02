@@ -59,6 +59,8 @@
 #include "imgproc/scanconversion.hpp"
 #include "imgproc/jpeg.hpp"
 
+#include "geometry/parse-obj.hpp"
+
 #include "geo/csconvertor.hpp"
 #include "geo/enu.hpp"
 
@@ -68,7 +70,7 @@
 #include "vts-libs/vts/tileop.hpp"
 
 #include "vef/reader.hpp"
-#include "slpk/reader.hpp"
+#include "slpk/writer.hpp"
 #include "miniball/miniball.hpp"
 
 #include "./tmptileset.hpp"
@@ -90,6 +92,8 @@ struct Config {
     int textureQuality;
     math::Size2 optimalTextureSize;
     slpk::SpatialReference spatialReference;
+    std::string layerName;
+    std::string copyrightText;
 
     vts::SubmeshMergeOptions smMergeOptions;
     double clipMargin;
@@ -126,6 +130,7 @@ private:
     fs::path input_;
     fs::path output_;
 
+    bool overwrite_;
     Config config_;
     vt::ExternalProgress::Config epConfig_;
 };
@@ -162,6 +167,14 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          "temporary tileset inside generated tileset. Use with caution.")
         ("keepTmpset"
          , "Keep temporary tileset intact on exit.")
+
+        ("layerName", po::value(&config_.layerName)
+         , "SLPK layer name. Defaults to output path stem "
+         "(filename without extentsion).")
+
+        ("copyrightText", po::value(&config_.copyrightText)
+         , "Optional copyright text for generated SLPK layer.")
+
         ;
 
     vt::progressConfiguration(config);
@@ -176,6 +189,7 @@ void Vef2Slpk::configuration(po::options_description &cmdline
 
 void Vef2Slpk::configure(const po::variables_map &vars)
 {
+    overwrite_ = vars.count("overwrite");
     config_.resume = vars.count("resume");
     config_.keepTmpset = vars.count("keepTmpset");
     epConfig_ = vt::configureProgress(vars);
@@ -386,9 +400,7 @@ double pixelArea(const vts::MeshArea &area) {
 Setup makeSetup(const Config &config, const vef::Archive &archive)
 {
     auto setup(toEnu(config, archive));
-    LOG(info4) << "setup.workExtents: " << setup.workExtents;
     setup.workExtents = prettifyExtents(setup.workExtents);
-    LOG(info4) << "setup.workExtents: " << setup.workExtents;
 
     for (const auto &lw : archive.manifest().windows) {
         setup.depth = std::max(setup.depth, lw.lods.size());
@@ -455,6 +467,17 @@ inline void warpInPlace(vts::SubMesh &mesh, const geo::CsConvertor &conv)
 inline void warpInPlace(vts::Mesh &mesh, const geo::CsConvertor &conv)
 {
     for (auto &sm : mesh) { warpInPlace(sm, conv); }
+}
+
+math::Extents2 measureMesh(const vts::Mesh &mesh)
+{
+    math::Extents2 extents(math::InvalidExtents{});
+    for (const auto &sm : mesh) {
+        for (const auto &v : sm.vertices) {
+            math::update(extents, v(0), v(1));
+        }
+    }
+    return extents;
 }
 
 class Cutter {
@@ -637,7 +660,11 @@ struct NodeId {
         nodeId.path.push_back(which);
         return nodeId;
     }
+
+    int level() const { return path.size() + 1; }
 };
+
+typedef boost::optional<slpk::NodeReference> OptNodeReference;
 
 template<typename CharT, typename Traits>
 inline std::basic_ostream<CharT, Traits>&
@@ -646,21 +673,110 @@ operator<<(std::basic_ostream<CharT, Traits> &os, const NodeId &nodeId)
     return os << utility::join(nodeId.path, "-", "root");
 }
 
+inline std::string asString(const NodeId &nodeId) {
+    return boost::lexical_cast<std::string>(nodeId);
+}
+
+class NodeHolder {
+public:
+    typedef std::shared_ptr<NodeHolder> pointer;
+    typedef std::vector<NodeHolder::pointer> list;
+
+    slpk::NodeReference reference;
+    slpk::Node node;
+
+    NodeHolder(slpk::Writer &writer, const NodeId &nodeId)
+        : writer_(writer), expected_(4)
+    {
+        node.id = asString(nodeId);
+    }
+
+    void child(const NodeHolder::pointer &child) {
+        const auto last(!--expected_);
+
+        if (child) {
+            node.children.push_back(child->reference);
+            children_.push_back(child);
+
+            for (auto &other : children_) {
+                other->node.neighbors.push_back(child->reference);
+                child->node.neighbors.push_back(other->reference);
+            }
+        }
+
+        if (last) { writer_.write(node); }
+    }
+
+private:
+    slpk::Writer &writer_;
+    int expected_;
+    list children_;
+};
+
 class Generator {
 public:
-    Generator(const tools::TmpTileset &ts, const Config &config
-              , const Setup &setup)
-        : ts_(ts), config_(config), setup_(setup)
+    Generator(slpk::Writer &writer, const tools::TmpTileset &ts
+              , const Config &config, const Setup &setup)
+        : writer_(writer), ts_(ts), config_(config), setup_(setup)
         , ti_(ts.tileIndex()), fullTree_(ti_)
+        , sceneExtents_(math::InvalidExtents{})
     {
         fullTree_.complete();
+
+        sli_.id = 0;
+        sli_.href = "layers/0";
+        sli_.layerType = slpk::LayerType::integratedMesh;
+        sli_.spatialReference = config_.spatialReference;
+        // TODO: spatialReference -> sli_.heightModelInfo
+        // TODO: generate VERSION
+        sli_.name = config_.layerName;
+        if (!config_.copyrightText.empty()) {
+            sli_.copyrightText = config_.copyrightText;
+        }
+
+        sli_.capabilities.insert(slpk::Capability::view);
+        sli_.capabilities.insert(slpk::Capability::query);
+
+        // store
+        auto &store(*sli_.store);
+
+        // TODO: store.id
+        store.profile = slpk::Profile::meshpyramids;
+        store.resourcePattern = { slpk::ResourcePattern::nodeIndexDocument
+                                  , slpk::ResourcePattern::sharedResource
+                                  , slpk::ResourcePattern::geometry
+                                  , slpk::ResourcePattern::texture };
+        store.rootNode = asString(NodeId());
+        store.indexCRS =
+            str(boost::format("http://www.opengis.net/def/crs/EPSG/0/%d")
+                % config_.spatialReference.wkid);
+        store.vertexCRS = store.indexCRS;
+
+        store.nidEncoding = "application/vnd.esri.I3S.json+gzip; version=1.6";
+        store.featureEncoding = store.nidEncoding;
+        store.geometryEncoding = store.nidEncoding;
+        store.textureEncoding.push_back("image/jpeg");
+
+        {
+            auto &idx(store.indexingScheme);
+            idx.name = slpk::IndexSchemeName::quadTree; // ???
+            // we do not calculate accumulated extents -> false
+            idx.inclusive = false;
+            idx.dimensionality = 2;
+            idx.childrenCardinality.max = 4;
+            idx.neighborCardinality.max = 4;
+        }
+
+        // TODO: default geometry schema
     }
 
     void operator()(/**vt::ExternalProgress &progress*/);
 
 private:
-    boost::optional<slpk::NodeReference>
-    process(const vts::TileId &tileId, NodeId nodeId);
+    NodeHolder::pointer process(const vts::TileId &tileId, NodeId nodeId
+                                , NodeHolder::pointer parent);
+
+    slpk::Writer &writer_;
 
     const tools::TmpTileset &ts_;
     const Config &config_;
@@ -668,6 +784,9 @@ private:
 
     vts::TileIndex ti_;
     vts::TileIndex fullTree_;
+
+    slpk::SceneLayerInfo sli_;
+    math::Extents2 sceneExtents_;
 };
 
 struct MeshVertices {
@@ -691,8 +810,9 @@ struct MeshVertices {
     std::vector<Point3> points;
 };
 
-boost::optional<slpk::NodeReference>
-Generator::process(const vts::TileId &tileId, NodeId nodeId)
+NodeHolder::pointer
+Generator::process(const vts::TileId &tileId, NodeId nodeId
+                   , NodeHolder::pointer parent)
 {
     struct TIDGuard {
         TIDGuard(const std::string &id)
@@ -705,21 +825,35 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId)
         const std::string old;
     };
 
-    if (!fullTree_.get(tileId)) { return boost::none; }
+    if (!fullTree_.get(tileId)) { return {}; }
 
     TIDGuard tg(str(boost::format("tile:%s") % tileId));
 
-    boost::optional<slpk::NodeReference> onr;
+    auto node(std::make_shared<NodeHolder>(writer_, nodeId));
+    auto &nodeReference(node->reference);
+
     if (ti_.get(tileId)) {
         LOG(info3)
             << "Generating node <" << nodeId << "> from tile " << tileId
             << ".";
 
+        // create new node
+        auto &n(node->node);
+
+        n.level = nodeId.level();
+        if (parent) { n.parentNode = parent->reference; }
+
+        // TODO: build node version
+
+        // build node reference
+        nodeReference = n.reference();
+        nodeReference.href = "../" + nodeReference.id;
+
+        // TODO: build geometry data and texture data
+
         vts::Mesh::pointer mesh;
         vts::Atlas::pointer atlas;
-
         {
-            // TODO: generate
             const auto loaded(ts_.load(tileId, config_.textureQuality));
 
             // merge submeshes
@@ -727,40 +861,51 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId)
                 = vts::mergeSubmeshes
                 (tileId, std::get<0>(loaded), std::get<1>(loaded)
                  , config_.textureQuality, config_.smMergeOptions);
+
+            // TODO: store mesh and atlas
         }
 
-        auto &nodeReference(*(onr = boost::in_place()));
-        nodeReference.id = boost::lexical_cast<std::string>(nodeId);
+        // measure mesh
+        {
+            auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
+            mbs.center = setup_.work2dst(mbs.center);
 
-        const auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
-        LOG(info4) << "mbs: " << mbs.center << ", " << mbs.radius;
-        nodeReference.mbs.x = mbs.center(0);
-        nodeReference.mbs.y = mbs.center(1);
-        nodeReference.mbs.z = mbs.center(2);
-        nodeReference.mbs.r = mbs.radius;
+            n.mbs.x = mbs.center(0);
+            n.mbs.y = mbs.center(1);
+            n.mbs.z = mbs.center(2);
+            n.mbs.r = mbs.radius;
+        }
+        nodeReference.mbs = n.mbs;
 
-        // TODO: fill node reference
-        (void) nodeReference;
+        // convert mesh vertices to output SRS
+        warpInPlace(*mesh, setup_.work2dst);
+        // measure extents
+        const auto meshExtents(measureMesh(*mesh));
+        UTILITY_OMP(critical(vef2slpk_process_2))
+            math::update(extents_, meshExtents);
+
+
+    } else {
+        // non-geometry node, fill in
+        nodeReference.id = asString(nodeId);
+        nodeReference.href = "../" + nodeReference.id;
     }
 
     // proces children -> go down
-    slpk::NodeReference::list nodeReferences;
     int childIndex(0);
     for (auto child : vts::children(tileId)) {
         UTILITY_OMP(task)
         {
-            if (auto nodeReference
-                = process(child, nodeId.child(childIndex)))
-            {
-                UTILITY_OMP(critical(vef2slpk_process_1))
-                   nodeReferences.push_back(std::move(*nodeReference));
-            }
+            auto childNode(process(child, nodeId.child(childIndex), node));
+
+            UTILITY_OMP(critical(vef2slpk_process_1))
+                node->child(childNode);
         }
         ++childIndex;
     }
 
     // done
-    return onr;
+    return node;
 }
 
 void Generator::operator()(/**vt::ExternalProgress &progress*/)
@@ -768,12 +913,18 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
     UTILITY_OMP(parallel)
     UTILITY_OMP(single)
     {
-        process({}, {});
+        process({}, {}, {});
     }
+
+    // write 3D scenene layer info at last
+    writer_.write(sli_);
 }
 
 int Vef2Slpk::run()
 {
+    // output file
+    slpk::Writer writer(output_, {}, overwrite_);
+
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
     tools::TmpTileset ts(tmpTilesetPath, !config_.resume);
     ts.keep(config_.keepTmpset);
@@ -803,7 +954,9 @@ int Vef2Slpk::run()
     auto setup(makeSetup(config_, input));
 
     Cutter(ts, input, config_, setup)(/* progress */);
-    Generator(ts, config_, setup)(/* progress */);
+    Generator(writer, ts, config_, setup)(/* progress */);
+
+    writer.flush();
 
     // all done
     LOG(info4) << "All done.";
