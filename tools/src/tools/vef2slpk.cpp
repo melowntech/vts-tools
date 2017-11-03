@@ -716,6 +716,68 @@ private:
     list children_;
 };
 
+slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
+{
+    slpk::SceneLayerInfo sli;
+
+    sli.id = 0;
+    sli.href = "layers/0";
+    sli.layerType = slpk::LayerType::integratedMesh;
+    sli.spatialReference = config.spatialReference;
+    // TODO: spatialReference -> sli.heightModelInfo
+    // TODO: generate VERSION
+    sli.name = config.layerName;
+    sli.copyrightText = config.copyrightText;
+
+    sli.capabilities.insert(slpk::Capability::view);
+    sli.capabilities.insert(slpk::Capability::query);
+
+    // store
+    auto &store(*sli.store);
+
+    // TODO: store.id
+    store.profile = slpk::Profile::meshpyramids;
+    store.resourcePattern = { slpk::ResourcePattern::nodeIndexDocument
+                              , slpk::ResourcePattern::sharedResource
+                              , slpk::ResourcePattern::geometry
+                              , slpk::ResourcePattern::texture };
+    store.rootNode = asString(NodeId());
+
+    store.textureEncoding.emplace_back("image/jpeg");
+
+    {
+        auto &idx(store.indexingScheme);
+        idx.name = slpk::IndexSchemeName::quadTree; // ???
+        // we do not calculate accumulated extents -> false
+        idx.inclusive = false;
+        idx.dimensionality = 2;
+        idx.childrenCardinality.max = 4;
+        idx.neighborCardinality.max = 4;
+    }
+
+    // default geometry schema
+    auto &dgs(*(store.defaultGeometrySchema = boost::in_place()));
+    dgs.geometryType = slpk::GeometryType::triangles;
+    dgs.topology = slpk::Topology::perAttributeArray;
+    dgs.header.emplace_back("vertexCount", slpk::DataType::uint32);
+
+    /* position */ {
+        dgs.vertexAttributes.emplace_back("position");
+        auto &position(dgs.vertexAttributes.back());
+        position.valueType = slpk::DataType::float32;
+        position.valuesPerElement = 3;
+    }
+
+    /* uv0 */ {
+        dgs.vertexAttributes.emplace_back("uv0");
+        auto &uv0(dgs.vertexAttributes.back());
+        uv0.valueType = slpk::DataType::float32;
+        uv0.valuesPerElement = 2;
+    }
+
+    return sli;
+}
+
 class Generator {
 public:
     Generator(slpk::Writer &writer, const tools::TmpTileset &ts
@@ -725,61 +787,6 @@ public:
         , sceneExtents_(math::InvalidExtents{})
     {
         fullTree_.complete();
-
-        sli_.id = 0;
-        sli_.href = "layers/0";
-        sli_.layerType = slpk::LayerType::integratedMesh;
-        sli_.spatialReference = config_.spatialReference;
-        // TODO: spatialReference -> sli_.heightModelInfo
-        // TODO: generate VERSION
-        sli_.name = config_.layerName;
-        sli_.copyrightText = config_.copyrightText;
-
-        sli_.capabilities.insert(slpk::Capability::view);
-        sli_.capabilities.insert(slpk::Capability::query);
-
-        // store
-        auto &store(*sli_.store);
-
-        // TODO: store.id
-        store.profile = slpk::Profile::meshpyramids;
-        store.resourcePattern = { slpk::ResourcePattern::nodeIndexDocument
-                                  , slpk::ResourcePattern::sharedResource
-                                  , slpk::ResourcePattern::geometry
-                                  , slpk::ResourcePattern::texture };
-        store.rootNode = asString(NodeId());
-
-        store.textureEncoding.emplace_back("image/jpeg");
-
-        {
-            auto &idx(store.indexingScheme);
-            idx.name = slpk::IndexSchemeName::quadTree; // ???
-            // we do not calculate accumulated extents -> false
-            idx.inclusive = false;
-            idx.dimensionality = 2;
-            idx.childrenCardinality.max = 4;
-            idx.neighborCardinality.max = 4;
-        }
-
-        // default geometry schema
-        auto &dgs(*(store.defaultGeometrySchema = boost::in_place()));
-        dgs.geometryType = slpk::GeometryType::triangles;
-        dgs.topology = slpk::Topology::perAttributeArray;
-        dgs.header.emplace_back("vertexCount", slpk::DataType::uint32);
-
-        /* position */ {
-            dgs.vertexAttributes.emplace_back("position");
-            auto &position(dgs.vertexAttributes.back());
-            position.valueType = slpk::DataType::float32;
-            position.valuesPerElement = 3;
-        }
-
-        /* uv0 */ {
-            dgs.vertexAttributes.emplace_back("uv0");
-            auto &uv0(dgs.vertexAttributes.back());
-            uv0.valueType = slpk::DataType::float32;
-            uv0.valuesPerElement = 2;
-        }
     }
 
     void operator()(/**vt::ExternalProgress &progress*/);
@@ -797,7 +804,6 @@ private:
     vts::TileIndex ti_;
     vts::TileIndex fullTree_;
 
-    slpk::SceneLayerInfo sli_;
     math::Extents2 sceneExtents_;
 };
 
@@ -821,6 +827,55 @@ struct MeshVertices {
     const vts::Mesh &mesh;
     std::vector<Point3> points;
 };
+
+/** TODO: implement me
+ */
+struct MeshSaver : slpk::MeshSaver {
+    MeshSaver(const vts::SubMesh &sm) : sm(sm) {}
+
+    virtual Properties properties() const {
+        Properties p;
+        return p;
+    }
+
+    virtual math::Point3d position(std::size_t index) const {
+        (void) index;
+        return {};
+    }
+
+    virtual math::Point2d uv0(std::size_t index) const {
+        (void) index;
+        return {};
+    }
+
+    const vts::SubMesh &sm;
+};
+
+struct TextureSaver : slpk::TextureSaver {
+    TextureSaver(const vts::Atlas &atlas, std::size_t index)
+        : atlas(atlas), index(index)
+    {}
+
+    virtual void save(std::ostream &os, const std::string &mimeType) const {
+        // TODO: store in different formats
+        (void) mimeType;
+        atlas.write(os, index);
+    }
+
+    const vts::Atlas &atlas;
+    std::size_t index;
+};
+
+void write(slpk::Writer &writer, slpk::Node &node, const vts::Mesh &mesh
+           , const vts::Atlas &atlas)
+{
+    int smi(0);
+    for (const auto &sm : mesh) {
+        std::ostringstream os;
+        atlas.write(os, smi++);
+        writer.write(node, TextureSaver(atlas, smi), MeshSaver(sm));
+    }
+}
 
 NodeHolder::pointer
 Generator::process(const vts::TileId &tileId, NodeId nodeId
@@ -867,14 +922,11 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         vts::Atlas::pointer atlas;
         {
             const auto loaded(ts_.load(tileId, config_.textureQuality));
-
             // merge submeshes
             std::tie(mesh, atlas)
                 = vts::mergeSubmeshes
                 (tileId, std::get<0>(loaded), std::get<1>(loaded)
                  , config_.textureQuality, config_.smMergeOptions);
-
-            // TODO: store mesh and atlas
         }
 
         // measure mesh
@@ -895,17 +947,16 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         // measure extents
         const auto meshExtents(measureMesh(*mesh));
         UTILITY_OMP(critical(vef2slpk_process_2))
-            math::update(sli_.store->extents, meshExtents);
-
-        // add texture data
-        n.textureData.emplace_back("./textures/0");
-        n.geometryData.emplace_back("./geometries/0");
+            math::update(sceneExtents_, meshExtents);
 
         // LOD selection
         {
             n.lodSelection.emplace_back();
             n.lodSelection.back().maxError = 500.0; // ???
         }
+
+        // write mesh and atlas
+        write(writer_, n, *mesh, *atlas);
     } else {
         // non-geometry node, fill in
         nodeReference.id = asString(nodeId);
@@ -937,14 +988,17 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
         process({}, {}, {});
     }
 
-    // write 3D scenene layer info at last
-    writer_.write(sli_);
+    // finish archive
+    writer_.flush([&](slpk::SceneLayerInfo &sli) -> void
+    {
+        sli.store->extents = sceneExtents_;
+    });
 }
 
 int Vef2Slpk::run()
 {
     // output file
-    slpk::Writer writer(output_, {}, overwrite_);
+    slpk::Writer writer(output_, {}, makeSceneLayerInfo(config_), overwrite_);
 
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
     tools::TmpTileset ts(tmpTilesetPath, !config_.resume);
@@ -976,8 +1030,6 @@ int Vef2Slpk::run()
 
     Cutter(ts, input, config_, setup)(/* progress */);
     Generator(writer, ts, config_, setup)(/* progress */);
-
-    writer.flush();
 
     // all done
     LOG(info4) << "All done.";
