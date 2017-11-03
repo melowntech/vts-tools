@@ -34,6 +34,7 @@
 #include <boost/optional/optional_io.hpp>
 #include <boost/utility/in_place_factory.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/format.hpp>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -93,7 +94,7 @@ struct Config {
     math::Size2 optimalTextureSize;
     slpk::SpatialReference spatialReference;
     std::string layerName;
-    std::string copyrightText;
+    boost::optional<std::string> copyrightText;
 
     vts::SubmeshMergeOptions smMergeOptions;
     double clipMargin;
@@ -172,7 +173,7 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          , "SLPK layer name. Defaults to output path stem "
          "(filename without extentsion).")
 
-        ("copyrightText", po::value(&config_.copyrightText)
+        ("copyrightText", po::value<std::string>()
          , "Optional copyright text for generated SLPK layer.")
 
         ;
@@ -193,6 +194,9 @@ void Vef2Slpk::configure(const po::variables_map &vars)
     config_.resume = vars.count("resume");
     config_.keepTmpset = vars.count("keepTmpset");
     epConfig_ = vt::configureProgress(vars);
+    if (vars.count("copyrightText")) {
+        config_.copyrightText = vars["copyrightText"].as<std::string>();
+    }
 }
 
 bool Vef2Slpk::help(std::ostream &out, const std::string &what) const
@@ -220,8 +224,7 @@ struct MeshInfo {
         area.mesh += mi.area.mesh;
         area.submeshes.insert(area.submeshes.end(), mi.area.submeshes.begin()
                               , mi.area.submeshes.end());
-        math::update(extents, mi.extents.ll);
-        math::update(extents, mi.extents.ur);
+        math::update(extents, mi.extents);
         faceCount += mi.faceCount;
     }
 };
@@ -730,9 +733,7 @@ public:
         // TODO: spatialReference -> sli_.heightModelInfo
         // TODO: generate VERSION
         sli_.name = config_.layerName;
-        if (!config_.copyrightText.empty()) {
-            sli_.copyrightText = config_.copyrightText;
-        }
+        sli_.copyrightText = config_.copyrightText;
 
         sli_.capabilities.insert(slpk::Capability::view);
         sli_.capabilities.insert(slpk::Capability::query);
@@ -747,15 +748,8 @@ public:
                                   , slpk::ResourcePattern::geometry
                                   , slpk::ResourcePattern::texture };
         store.rootNode = asString(NodeId());
-        store.indexCRS =
-            str(boost::format("http://www.opengis.net/def/crs/EPSG/0/%d")
-                % config_.spatialReference.wkid);
-        store.vertexCRS = store.indexCRS;
 
-        store.nidEncoding = "application/vnd.esri.I3S.json+gzip; version=1.6";
-        store.featureEncoding = store.nidEncoding;
-        store.geometryEncoding = store.nidEncoding;
-        store.textureEncoding.push_back("image/jpeg");
+        store.textureEncoding.emplace_back("image/jpeg");
 
         {
             auto &idx(store.indexingScheme);
@@ -767,7 +761,25 @@ public:
             idx.neighborCardinality.max = 4;
         }
 
-        // TODO: default geometry schema
+        // default geometry schema
+        auto &dgs(*(store.defaultGeometrySchema = boost::in_place()));
+        dgs.geometryType = slpk::GeometryType::triangles;
+        dgs.topology = slpk::Topology::perAttributeArray;
+        dgs.header.emplace_back("vertexCount", slpk::DataType::uint32);
+
+        /* position */ {
+            dgs.vertexAttributes.emplace_back("position");
+            auto &position(dgs.vertexAttributes.back());
+            position.valueType = slpk::DataType::float32;
+            position.valuesPerElement = 3;
+        }
+
+        /* uv0 */ {
+            dgs.vertexAttributes.emplace_back("uv0");
+            auto &uv0(dgs.vertexAttributes.back());
+            uv0.valueType = slpk::DataType::float32;
+            uv0.valuesPerElement = 2;
+        }
     }
 
     void operator()(/**vt::ExternalProgress &progress*/);
@@ -879,12 +891,21 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
 
         // convert mesh vertices to output SRS
         warpInPlace(*mesh, setup_.work2dst);
+
         // measure extents
         const auto meshExtents(measureMesh(*mesh));
         UTILITY_OMP(critical(vef2slpk_process_2))
-            math::update(extents_, meshExtents);
+            math::update(sli_.store->extents, meshExtents);
 
+        // add texture data
+        n.textureData.emplace_back("./textures/0");
+        n.geometryData.emplace_back("./geometries/0");
 
+        // LOD selection
+        {
+            n.lodSelection.emplace_back();
+            n.lodSelection.back().maxError = 500.0; // ???
+        }
     } else {
         // non-geometry node, fill in
         nodeReference.id = asString(nodeId);
