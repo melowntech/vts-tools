@@ -828,26 +828,47 @@ struct MeshVertices {
     std::vector<Point3> points;
 };
 
-/** TODO: implement me
- */
 struct MeshSaver : slpk::MeshSaver {
-    MeshSaver(const vts::SubMesh &sm) : sm(sm) {}
+    MeshSaver(const slpk::Node &node, const math::Size2 &txSize
+              , const vts::SubMesh &sm)
+        : node(node), txSize(txSize), sm(sm)
+    {}
 
     virtual Properties properties() const {
         Properties p;
+        p.faceCount = sm.faces.size();
         return p;
     }
 
-    virtual math::Point3d position(std::size_t index) const {
-        (void) index;
-        return {};
+    virtual math::Triangle3d face(std::size_t index) const {
+        auto &f(sm.faces[index]);
+        return {{ localize(sm.vertices[f(0)])
+                  , localize(sm.vertices[f(1)])
+                  , localize(sm.vertices[f(2)]) }};
     }
 
-    virtual math::Point2d uv0(std::size_t index) const {
-        (void) index;
-        return {};
+    virtual math::Triangle2d faceTc(std::size_t index) const {
+        auto &f(sm.facesTc[index]);
+        return {{ normalize(sm.tc[f(0)])
+                  , normalize(sm.tc[f(1)])
+                  , normalize(sm.tc[f(2)]) }};
     }
 
+    math::Point3 localize(math::Point3 p) const {
+        p(0) -= node.mbs.x;
+        p(1) -= node.mbs.y;
+        p(2) -= node.mbs.z;
+        return p;
+    }
+
+    math::Point2 normalize(math::Point2 p) const {
+        p(0) /= txSize.width;
+        p(1) = 1.0 - (p(1) / txSize.height);
+        return p;
+    }
+
+    const slpk::Node &node;
+    const math::Size2 &txSize;
     const vts::SubMesh &sm;
 };
 
@@ -873,7 +894,8 @@ void write(slpk::Writer &writer, slpk::Node &node, const vts::Mesh &mesh
     for (const auto &sm : mesh) {
         std::ostringstream os;
         atlas.write(os, smi);
-        writer.write(node, TextureSaver(atlas, smi), MeshSaver(sm));
+        writer.write(node, TextureSaver(atlas, smi)
+                     , MeshSaver(node, atlas.imageSize(smi), sm));
         ++smi;
     }
 }
