@@ -872,8 +872,9 @@ void write(slpk::Writer &writer, slpk::Node &node, const vts::Mesh &mesh
     int smi(0);
     for (const auto &sm : mesh) {
         std::ostringstream os;
-        atlas.write(os, smi++);
+        atlas.write(os, smi);
         writer.write(node, TextureSaver(atlas, smi), MeshSaver(sm));
+        ++smi;
     }
 }
 
