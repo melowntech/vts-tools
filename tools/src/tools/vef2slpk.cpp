@@ -25,6 +25,7 @@
  */
 
 #include <cstdlib>
+#include <ctime>
 #include <string>
 #include <iostream>
 #include <algorithm>
@@ -35,6 +36,9 @@
 #include <boost/utility/in_place_factory.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/format.hpp>
+#include <boost/uuid/string_generator.hpp>
+#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -49,6 +53,7 @@
 #include "utility/limits.hpp"
 #include "utility/binaryio.hpp"
 #include "utility/path.hpp"
+#include "utility/stl-helpers.hpp"
 
 #include "service/cmdline.hpp"
 #include "service/verbosity.hpp"
@@ -94,6 +99,7 @@ struct Config {
     math::Size2 optimalTextureSize;
     slpk::SpatialReference spatialReference;
     std::string layerName;
+    boost::optional<std::string> alias;
     boost::optional<std::string> copyrightText;
 
     vts::SubmeshMergeOptions smMergeOptions;
@@ -104,7 +110,9 @@ struct Config {
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , clipMargin(1.0 / 128.), resume(false), keepTmpset(false)
-    {}
+    {
+        spatialReference.vcsWkid = 3855;
+    }
 };
 
 class Vef2Slpk : public service::Cmdline
@@ -173,6 +181,9 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          , "SLPK layer name. Defaults to output path stem "
          "(filename without extentsion).")
 
+        ("alias", po::value<std::string>()
+         , "Optional display alias for generated SLPK layer.")
+
         ("copyrightText", po::value<std::string>()
          , "Optional copyright text for generated SLPK layer.")
 
@@ -194,6 +205,9 @@ void Vef2Slpk::configure(const po::variables_map &vars)
     config_.resume = vars.count("resume");
     config_.keepTmpset = vars.count("keepTmpset");
     epConfig_ = vt::configureProgress(vars);
+    if (vars.count("alias")) {
+        config_.alias = vars["alias"].as<std::string>();
+    }
     if (vars.count("copyrightText")) {
         config_.copyrightText = vars["copyrightText"].as<std::string>();
     }
@@ -687,6 +701,7 @@ public:
 
     slpk::NodeReference reference;
     slpk::Node node;
+    slpk::SharedResource sharedResource;
 
     NodeHolder(slpk::Writer &writer, const NodeId &nodeId)
         : writer_(writer), expected_(4)
@@ -707,7 +722,13 @@ public:
             }
         }
 
-        if (last) { writer_.write(node); }
+        if (!last) { return; }
+
+        if (node.geometryData.empty()) {
+            writer_.write(node);
+        } else {
+            writer_.write(node, &sharedResource);
+        }
     }
 
 private:
@@ -715,6 +736,15 @@ private:
     int expected_;
     list children_;
 };
+
+std::string generateUuid() {
+    // generate random uuid
+    boost::mt19937 ran;
+    // maybe use better initialization
+    ran.seed(std::time(nullptr));
+    return to_string(boost::uuids::basic_random_generator
+                     <boost::mt19937>(&ran)());
+}
 
 slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
 {
@@ -724,9 +754,15 @@ slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
     sli.href = "layers/0";
     sli.layerType = slpk::LayerType::integratedMesh;
     sli.spatialReference = config.spatialReference;
+
     // TODO: spatialReference -> sli.heightModelInfo
+    sli.heightModelInfo.heightModel = slpk::HeightModel::orthometric;
+    sli.heightModelInfo.ellipsoid = "wgs84";
+    sli.heightModelInfo.heightUnit = "meter";
+
     // TODO: generate VERSION
     sli.name = config.layerName;
+    sli.alias = config.alias;
     sli.copyrightText = config.copyrightText;
 
     sli.capabilities.insert(slpk::Capability::view);
@@ -735,13 +771,13 @@ slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
     // store
     auto &store(*sli.store);
 
-    // TODO: store.id
+    store.id = generateUuid();
     store.profile = slpk::Profile::meshpyramids;
     store.resourcePattern = { slpk::ResourcePattern::nodeIndexDocument
                               , slpk::ResourcePattern::sharedResource
                               , slpk::ResourcePattern::geometry
                               , slpk::ResourcePattern::texture };
-    store.rootNode = asString(NodeId());
+    store.rootNode = "./nodes/" + asString(NodeId());
 
     store.textureEncoding.emplace_back("image/jpeg");
 
@@ -750,7 +786,7 @@ slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
         idx.name = slpk::IndexSchemeName::quadTree; // ???
         // we do not calculate accumulated extents -> false
         idx.inclusive = false;
-        idx.dimensionality = 2;
+        idx.dimensionality = 3;
         idx.childrenCardinality.max = 4;
         idx.neighborCardinality.max = 4;
     }
@@ -759,20 +795,39 @@ slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
     auto &dgs(*(store.defaultGeometrySchema = boost::in_place()));
     dgs.geometryType = slpk::GeometryType::triangles;
     dgs.topology = slpk::Topology::perAttributeArray;
-    dgs.header.emplace_back("vertexCount", slpk::DataType::uint32);
 
-    /* position */ {
-        dgs.vertexAttributes.emplace_back("position");
-        auto &position(dgs.vertexAttributes.back());
-        position.valueType = slpk::DataType::float32;
-        position.valuesPerElement = 3;
+    /* vertexAttributes */ {
+        dgs.header.emplace_back("vertexCount", slpk::DataType::uint32);
+
+        /* position */ {
+            auto &position(utility::append(dgs.vertexAttributes, "position"));
+            position.valueType = slpk::DataType::float32;
+            position.valuesPerElement = 3;
+        }
+
+        /* uv0 */ {
+            auto &uv0(utility::append(dgs.vertexAttributes, "uv0"));
+            uv0.valueType = slpk::DataType::float32;
+            uv0.valuesPerElement = 2;
+        }
+
     }
 
-    /* uv0 */ {
-        dgs.vertexAttributes.emplace_back("uv0");
-        auto &uv0(dgs.vertexAttributes.back());
-        uv0.valueType = slpk::DataType::float32;
-        uv0.valuesPerElement = 2;
+    /* featureAttributes */ {
+        dgs.header.emplace_back("featureCount", slpk::DataType::uint32);
+
+        /* id */ {
+            auto &id(utility::append(dgs.featureAttributes, "id"));
+            id.valueType = slpk::DataType::uint64;
+            id.valuesPerElement = 1;
+        }
+
+        /* faceRange */ {
+            auto &faceRange
+                (utility::append(dgs.featureAttributes, "faceRange"));
+            faceRange.valueType = slpk::DataType::uint32;
+            faceRange.valuesPerElement = 2;
+        }
     }
 
     return sli;
@@ -829,9 +884,8 @@ struct MeshVertices {
 };
 
 struct MeshSaver : slpk::MeshSaver {
-    MeshSaver(const slpk::Node &node, const math::Size2 &txSize
-              , const vts::SubMesh &sm)
-        : node(node), txSize(txSize), sm(sm)
+    MeshSaver(const slpk::Node &node, const vts::SubMesh &sm)
+        : node(node), sm(sm)
     {}
 
     virtual Properties properties() const {
@@ -862,13 +916,11 @@ struct MeshSaver : slpk::MeshSaver {
     }
 
     math::Point2 normalize(math::Point2 p) const {
-        p(0) /= txSize.width;
-        p(1) = 1.0 - (p(1) / txSize.height);
+        p(1) = 1.0 - p(1);
         return p;
     }
 
     const slpk::Node &node;
-    const math::Size2 &txSize;
     const vts::SubMesh &sm;
 };
 
@@ -876,6 +928,10 @@ struct TextureSaver : slpk::TextureSaver {
     TextureSaver(const vts::Atlas &atlas, std::size_t index)
         : atlas(atlas), index(index)
     {}
+
+    virtual math::Size2 imageSize() const {
+        return atlas.imageSize(index);
+    }
 
     virtual void save(std::ostream &os, const std::string &mimeType) const {
         // TODO: store in different formats
@@ -887,15 +943,16 @@ struct TextureSaver : slpk::TextureSaver {
     std::size_t index;
 };
 
-void write(slpk::Writer &writer, slpk::Node &node, const vts::Mesh &mesh
-           , const vts::Atlas &atlas)
+void write(slpk::Writer &writer
+           , slpk::Node &node, slpk::Texture::list &textures
+           , const vts::Mesh &mesh, const vts::Atlas &atlas)
 {
     int smi(0);
     for (const auto &sm : mesh) {
         std::ostringstream os;
         atlas.write(os, smi);
-        writer.write(node, TextureSaver(atlas, smi)
-                     , MeshSaver(node, atlas.imageSize(smi), sm));
+        writer.write(node, textures
+                     , MeshSaver(node, sm), TextureSaver(atlas, smi));
         ++smi;
     }
 }
@@ -929,6 +986,15 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
 
         // create new node
         auto &n(node->node);
+        auto &sr(node->sharedResource);
+
+        n.featureData.emplace_back("./features/0");
+
+        {
+            auto &material
+                (utility::append(sr.materialDefinitions, "TexturedMaterial"));
+            material.name = "StandardMaterial";
+        }
 
         n.level = nodeId.level();
         if (parent) { n.parentNode = parent->reference; }
@@ -979,7 +1045,7 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         }
 
         // write mesh and atlas
-        write(writer_, n, *mesh, *atlas);
+        write(writer_, n, sr.textureDefinitions, *mesh, *atlas);
     } else {
         // non-geometry node, fill in
         nodeReference.id = asString(nodeId);
