@@ -896,9 +896,7 @@ struct MeshSaver : slpk::MeshSaver {
 
     virtual math::Triangle3d face(std::size_t index) const {
         auto &f(sm.faces[index]);
-        return {{ localize(sm.vertices[f(0)])
-                  , localize(sm.vertices[f(1)])
-                  , localize(sm.vertices[f(2)]) }};
+        return {{ sm.vertices[f(0)], sm.vertices[f(1)], sm.vertices[f(2)] }};
     }
 
     virtual math::Triangle2d faceTc(std::size_t index) const {
@@ -906,13 +904,6 @@ struct MeshSaver : slpk::MeshSaver {
         return {{ normalize(sm.tc[f(0)])
                   , normalize(sm.tc[f(1)])
                   , normalize(sm.tc[f(2)]) }};
-    }
-
-    math::Point3 localize(math::Point3 p) const {
-        p(0) -= node.mbs.x;
-        p(1) -= node.mbs.y;
-        p(2) -= node.mbs.z;
-        return p;
     }
 
     math::Point2 normalize(math::Point2 p) const {
@@ -944,14 +935,14 @@ struct TextureSaver : slpk::TextureSaver {
 };
 
 void write(slpk::Writer &writer
-           , slpk::Node &node, slpk::Texture::list &textures
+           , slpk::Node &node, slpk::SharedResource &sharedResource
            , const vts::Mesh &mesh, const vts::Atlas &atlas)
 {
     int smi(0);
     for (const auto &sm : mesh) {
         std::ostringstream os;
         atlas.write(os, smi);
-        writer.write(node, textures
+        writer.write(node, sharedResource
                      , MeshSaver(node, sm), TextureSaver(atlas, smi));
         ++smi;
     }
@@ -988,8 +979,6 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         auto &n(node->node);
         auto &sr(node->sharedResource);
 
-        n.featureData.emplace_back("./features/0");
-
         {
             auto &material
                 (utility::append(sr.materialDefinitions, "TexturedMaterial"));
@@ -1023,9 +1012,7 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
             auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
             mbs.center = setup_.work2dst(mbs.center);
 
-            n.mbs.x = mbs.center(0);
-            n.mbs.y = mbs.center(1);
-            n.mbs.z = mbs.center(2);
+            n.mbs.center = mbs.center;
             n.mbs.r = mbs.radius;
         }
         nodeReference.mbs = n.mbs;
@@ -1045,7 +1032,7 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         }
 
         // write mesh and atlas
-        write(writer_, n, sr.textureDefinitions, *mesh, *atlas);
+        write(writer_, n, sr, *mesh, *atlas);
     } else {
         // non-geometry node, fill in
         nodeReference.id = asString(nodeId);
