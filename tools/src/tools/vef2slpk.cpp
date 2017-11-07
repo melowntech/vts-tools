@@ -102,6 +102,7 @@ struct Config {
     boost::optional<std::string> alias;
     boost::optional<std::string> copyrightText;
 
+    bool fuseSubmeshes;
     vts::SubmeshMergeOptions smMergeOptions;
     double clipMargin;
     bool resume;
@@ -109,9 +110,15 @@ struct Config {
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
+        , fuseSubmeshes(true)
         , clipMargin(1.0 / 128.), resume(false), keepTmpset(false)
     {
         spatialReference.vcsWkid = 3855;
+
+        // set to inlimited, we want one submesh since multiple texture support
+        // is missing
+        smMergeOptions.maxVertexCount = smMergeOptions.maxFaceCount
+            = std::numeric_limits<std::size_t>::max();
     }
 };
 
@@ -170,6 +177,11 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          ->default_value(config_.optimalTextureSize)->required()
          , "Size of ideal tile texture. Used to calculate fitting LOD from"
          "mesh texel size. Do not modify.")
+
+        ("fuseSubmeshes", po::value(&config_.fuseSubmeshes)
+         ->default_value(config_.fuseSubmeshes)->required()
+         , "Fuse submeshes into one bigger submesh. "
+         "NB: multi texture bundling is not supported, yet.")
 
         ("resume"
          , "Resumes interrupted encoding. There must be complete (valid) "
@@ -925,7 +937,7 @@ struct TextureSaver : slpk::TextureSaver {
     }
 
     virtual void save(std::ostream &os, const std::string &mimeType) const {
-        // TODO: store in different formats
+        // TODO: maybe store in different formats
         (void) mimeType;
         atlas.write(os, index);
     }
@@ -994,17 +1006,20 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         nodeReference = n.reference();
         nodeReference.href = "../" + nodeReference.id;
 
-        // TODO: build geometry data and texture data
-
         vts::Mesh::pointer mesh;
         vts::Atlas::pointer atlas;
         {
             const auto loaded(ts_.load(tileId, config_.textureQuality));
-            // merge submeshes
-            std::tie(mesh, atlas)
-                = vts::mergeSubmeshes
-                (tileId, std::get<0>(loaded), std::get<1>(loaded)
-                 , config_.textureQuality, config_.smMergeOptions);
+            if (config_.fuseSubmeshes) {
+                // merge submeshes
+                std::tie(mesh, atlas)
+                    = vts::mergeSubmeshes
+                    (tileId, std::get<0>(loaded), std::get<1>(loaded)
+                     , config_.textureQuality, config_.smMergeOptions);
+            } else {
+                mesh = std::get<0>(loaded);
+                atlas = std::get<1>(loaded);
+            }
         }
 
         // measure mesh
