@@ -113,8 +113,6 @@ struct Config {
         , fuseSubmeshes(true)
         , clipMargin(1.0 / 128.), resume(false), keepTmpset(false)
     {
-        spatialReference.vcsWkid = 3855;
-
         // set to inlimited, we want one submesh since multiple texture support
         // is missing
         smMergeOptions.maxVertexCount = smMergeOptions.maxFaceCount
@@ -767,10 +765,8 @@ slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
     sli.layerType = slpk::LayerType::integratedMesh;
     sli.spatialReference = config.spatialReference;
 
-    // TODO: spatialReference -> sli.heightModelInfo
-    sli.heightModelInfo.heightModel = slpk::HeightModel::orthometric;
-    sli.heightModelInfo.ellipsoid = "wgs84";
-    sli.heightModelInfo.heightUnit = "meter";
+    // spatialReference -> sli.heightModelInfo
+    sli.heightModelInfo = slpk::HeightModelInfo(sli.spatialReference.srs());
 
     // TODO: generate VERSION
     sli.name = config.layerName;
