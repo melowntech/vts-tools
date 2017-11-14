@@ -49,3 +49,6 @@
 [submodule "externals/libslpk"]
 	path = externals/libslpk
 	url = https://github.com/Melown/libslpk.git
+[submodule "externals/libminiball"]
+	path = externals/libminiball
+	url = https://github.com/Melown/libminiball
