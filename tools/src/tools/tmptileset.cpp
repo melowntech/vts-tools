@@ -51,7 +51,11 @@ namespace {
 
 // mesh proper
 const char MAGIC[2] = { 'S', 'M' };
-const std::uint16_t VERSION = 0;
+const std::uint16_t VERSION = 1;
+
+bool isShort(std::size_t size) {
+    return size <= std::numeric_limits<std::uint16_t>::max();
+}
 
 void saveSimpleMesh(std::ostream &out, const Mesh &mesh)
 {
@@ -73,7 +77,7 @@ void saveSimpleMesh(std::ostream &out, const Mesh &mesh)
 
     // write header
     bin::write(out, MAGIC);
-    bin::write(out, std::uint16_t(0));
+    bin::write(out, std::uint16_t(VERSION));
 
     bin::write(out, std::uint16_t(mesh.submeshes.size()));
 
@@ -92,7 +96,8 @@ void saveSimpleMesh(std::ostream &out, const Mesh &mesh)
         bin::write(out, bbox.ur(2));
 
         // write vertices
-        bin::write(out, std::uint16_t(sm.vertices.size()));
+        bin::write(out, std::uint32_t(sm.vertices.size()));
+        const bool shortVertices(isShort(sm.vertices.size()));
         for (const auto &vertex : sm.vertices) {
             saveVertexComponent(vertex(0), bbox.ll(0), bbsize(0));
             saveVertexComponent(vertex(1), bbox.ll(1), bbsize(1));
@@ -100,26 +105,40 @@ void saveSimpleMesh(std::ostream &out, const Mesh &mesh)
         }
 
         // write tc
-        bin::write(out, std::uint16_t(sm.tc.size()));
+        bin::write(out, std::uint32_t(sm.tc.size()));
+        const bool shortTc(isShort(sm.tc.size()));
         for (const auto &tc : sm.tc) {
             saveTexCoord(tc(0));
             saveTexCoord(tc(1));
         }
 
         // save faces
-        bin::write(out, std::uint16_t(sm.faces.size()));
+        bin::write(out, std::uint32_t(sm.faces.size()));
 
         auto ifacesTc(sm.facesTc.begin());
         for (auto &face : sm.faces) {
             // face
-            bin::write(out, std::uint16_t(face(0)));
-            bin::write(out, std::uint16_t(face(1)));
-            bin::write(out, std::uint16_t(face(2)));
+            if (shortVertices) {
+                bin::write(out, std::uint16_t(face(0)));
+                bin::write(out, std::uint16_t(face(1)));
+                bin::write(out, std::uint16_t(face(2)));
+            } else {
+                bin::write(out, std::uint32_t(face(0)));
+                bin::write(out, std::uint32_t(face(1)));
+                bin::write(out, std::uint32_t(face(2)));
+            }
 
             // tc face
-            bin::write(out, std::uint16_t((*ifacesTc)(0)));
-            bin::write(out, std::uint16_t((*ifacesTc)(1)));
-            bin::write(out, std::uint16_t((*ifacesTc)(2)));
+            if (shortTc) {
+                bin::write(out, std::uint16_t((*ifacesTc)(0)));
+                bin::write(out, std::uint16_t((*ifacesTc)(1)));
+                bin::write(out, std::uint16_t((*ifacesTc)(2)));
+            } else {
+                bin::write(out, std::uint32_t((*ifacesTc)(0)));
+                bin::write(out, std::uint32_t((*ifacesTc)(1)));
+                bin::write(out, std::uint32_t((*ifacesTc)(2)));
+            }
+
             ++ifacesTc;
         }
     }
@@ -161,6 +180,15 @@ Mesh loadSimpleMesh(std::istream &in, const fs::path &path)
             << " has unsupported version (" << version << ").";
     }
 
+    auto versionedSize([&]() -> std::uint32_t
+    {
+        if (version > 0) {
+            return bin::read<std::uint32_t>(in);
+        }
+
+        return bin::read<std::uint16_t>(in);
+    });
+
     std::uint16_t subMeshCount;
     bin::read(in, subMeshCount);
 
@@ -180,8 +208,8 @@ Mesh loadSimpleMesh(std::istream &in, const fs::path &path)
         const math::Point3d bbsize(bbox.ur - bbox.ll);
 
         // load vertices
-        std::uint16_t vertexCount;
-        bin::read(in, vertexCount);
+        auto vertexCount(versionedSize());
+        const bool shortVertices(isShort(vertexCount));
         sm.vertices.resize(vertexCount);
         for (auto &vertex : sm.vertices) {
             vertex(0) = loadVertexComponent(bbox.ll(0), bbsize(0));
@@ -190,8 +218,8 @@ Mesh loadSimpleMesh(std::istream &in, const fs::path &path)
         }
 
         // load tc
-        std::uint16_t tcCount;
-        bin::read(in, tcCount);
+        auto tcCount(versionedSize());
+        const bool shortTc(isShort(tcCount));
         sm.tc.resize(tcCount);
         for (auto &tc : sm.tc) {
             tc(0) = loadTexCoord();
@@ -199,21 +227,32 @@ Mesh loadSimpleMesh(std::istream &in, const fs::path &path)
         }
 
         // load faces
-        std::uint16_t faceCount;
-        bin::read(in, faceCount);
+        std::uint32_t faceCount(versionedSize());
         sm.faces.resize(faceCount);
         sm.facesTc.resize(faceCount);
         auto ifacesTc(sm.facesTc.begin());
 
         for (auto &face : sm.faces) {
-            std::uint16_t index;
-            bin::read(in, index); face(0) = index;
-            bin::read(in, index); face(1) = index;
-            bin::read(in, index); face(2) = index;
+            if (shortVertices) {
+                face(0) = bin::read<std::uint16_t>(in);
+                face(1) = bin::read<std::uint16_t>(in);
+                face(2) = bin::read<std::uint16_t>(in);
+            } else {
+                face(0) = bin::read<std::uint32_t>(in);
+                face(1) = bin::read<std::uint32_t>(in);
+                face(2) = bin::read<std::uint32_t>(in);
+            }
 
-            bin::read(in, index); (*ifacesTc)(0) = index;
-            bin::read(in, index); (*ifacesTc)(1) = index;
-            bin::read(in, index); (*ifacesTc)(2) = index;
+            if (shortTc) {
+                (*ifacesTc)(0) = bin::read<std::uint16_t>(in);
+                (*ifacesTc)(1) = bin::read<std::uint16_t>(in);
+                (*ifacesTc)(2) = bin::read<std::uint16_t>(in);
+            } else {
+                (*ifacesTc)(0) = bin::read<std::uint32_t>(in);
+                (*ifacesTc)(1) = bin::read<std::uint32_t>(in);
+                (*ifacesTc)(2) = bin::read<std::uint32_t>(in);
+            }
+
             ++ifacesTc;
         }
     }

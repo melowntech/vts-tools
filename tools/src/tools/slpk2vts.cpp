@@ -939,7 +939,7 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
 
     // store in temporary storage
     const auto tileId(node.nodeId());
-    (void) textureRegions;
+
     tools::repack(tileId, clipped, clippedAtlas, textureRegions);
     tmpset_.store(tileId, clipped, clippedAtlas);
 
