@@ -27,6 +27,8 @@
 #ifndef vts_tools_tmptsencoder_hpp_included_
 #define vts_tools_tmptsencoder_hpp_included_
 
+#include <boost/optional.hpp>
+
 #include "utility/gccversion.hpp"
 
 #include "vts-libs/vts/encoder.hpp"
@@ -50,6 +52,8 @@ public:
 
         bool fuseSubmeshes;
         SubmeshMergeOptions smMergeOptions;
+
+        boost::optional<vts::TileId> debug_tileId;
 
         Config()
             : textureQuality(85), dtmExtractionRadius(40.0)

@@ -98,6 +98,19 @@ void TmpTsEncoder::prepare()
     // make valid tree complete from root
     validTree_.makeAbsolute().complete();
 
+    // cherry pick path to debug tileId (if configured)
+    if (config_.debug_tileId) {
+        TileIndex constraint(LodRange(0, validTree_.maxLod()));
+
+        auto tileId(*config_.debug_tileId);
+        for (int i(tileId.lod); i >= 0; --i) {
+            constraint.set(tileId, 1);
+            tileId = vts::parent(tileId);
+        }
+
+        validTree_ = validTree_.intersect(constraint);
+    }
+
     setConstraints(Constraints().setValidTree(&validTree_));
     const auto count(index_.count());
     setEstimatedTileCount(count);
@@ -194,6 +207,10 @@ void TmpTsEncoder::Config::configuration(po::options_description &config)
         ("fuseSubmeshes", po::value(&fuseSubmeshes)
          ->default_value(fuseSubmeshes)->required()
          , "Fuse submeshes into bigger submeshes (ideally one).")
+
+        ("debug.tileId", po::value<vts::TileId>()
+         , "Limits output to tiles in the path to "
+         "given tileId (optional, for debug purposes).")
         ;
 }
 
@@ -208,6 +225,9 @@ void TmpTsEncoder::Config::configure(const po::variables_map &vars)
     resume = vars.count("resume");
     keepTmpset = vars.count("keepTmpset");
 
+    if (vars.count("debug.tileId")) {
+        debug_tileId = vars["debug.tileId"].as<vts::TileId>();
+    }
 }
 
 } } } // namespace vtslibs::vts::tools
