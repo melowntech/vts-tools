@@ -281,8 +281,16 @@ public:
         return index_.get(tileId);
     }
 
-    void setTile(const TileId &tileId) {
-        index_.set(tileId, 1);
+    TileIndex::Flag::value_type getTile(const TileId &tileId) const {
+        return index_.get(tileId);
+    }
+
+    void setTile(const TileId &tileId
+                 , const TileIndex::Flag::value_type extraFlags)
+    {
+        index_.set(tileId
+                   , (extraFlags | TileIndex::Flag::mesh
+                      | TileIndex::Flag::atlas));
     }
 
     Driver::pointer driver() { return driver_; }
@@ -368,7 +376,8 @@ TmpTileset::~TmpTileset()
 }
 
 void TmpTileset::store(const TileId &tileId, const Mesh &mesh
-                       , const Atlas &atlas)
+                       , const Atlas &atlas
+                       , const TileIndex::Flag::value_type extraFlags)
 {
     LOG(debug)
         << tileId << " Storing mesh with "
@@ -385,7 +394,7 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
         for (auto &slice : slices_) {
             // TODO: make get/set in one pass
             if (!slice->hasTile(tileId)) {
-                slice->setTile(tileId);
+                slice->setTile(tileId, extraFlags);
                 return slice;
             }
         }
@@ -396,7 +405,7 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
         LOG(info3) << "Creating temporary tileset at " << path << ".";
         slices_.push_back(std::make_shared<Slice>(path));
         auto &slice(slices_.back());
-        slice->setTile(tileId);
+        slice->setTile(tileId, extraFlags);
         return slice;
     }());
 
@@ -404,15 +413,20 @@ void TmpTileset::store(const TileId &tileId, const Mesh &mesh
     slice->saveAtlas(tileId, atlas);
 }
 
-std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-TmpTileset::load(const vts::TileId &tileId, int quality) const
+TmpTileset::Tile
+TmpTileset::load(const TileId &tileId, int quality) const
 {
-    std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer> tile;
+    Tile tile;
     auto &mesh(std::get<0>(tile));
     auto &atlas(std::get<1>(tile));
+    auto &flags(std::get<2>(tile));
 
     for (const auto &slice : slices_) {
-        if (!slice->hasTile(tileId)) { continue; }
+        auto sliceFlags(slice->hasTile(tileId));
+        if (!sliceFlags) { continue; }
+
+        // remember flags
+        flags |= sliceFlags;
 
         auto driver(slice->driver());
 

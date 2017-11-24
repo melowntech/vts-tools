@@ -42,6 +42,7 @@
 #include "vts-libs/vts/types.hpp"
 #include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
+#include "vts-libs/vts/tileindex.hpp"
 
 namespace vtslibs { namespace vts { namespace tools {
 
@@ -56,17 +57,29 @@ public:
      */
     void keep(bool value) { keep_ = value; };
 
-    void store(const vts::TileId &tileId, const vts::Mesh &mesh
-               , const Atlas &atlas);
+    /** Store tile. Extra flags are stored into tile index along mesh/atlas
+     *  existence.
+     *
+     * Usage note: TileIndex::Flag::watertight flag is used by accompanying
+     * TmpTsEncoder to identify tiles that do not need patching from parent.
+     */
+    void store(const TileId &tileId, const Mesh &mesh
+               , const Atlas &atlas
+               , const TileIndex::Flag::value_type extraFlags
+               = TileIndex::Flag::watertight);
+
+    /** Loading function return type.
+     */
+    typedef std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer
+                       , TileIndex::Flag::value_type> Tile;
 
     /** Load tile from temporary storage.
      *
      * \param tileId tile ID
      * \param quality texture quality of loaded atlas
-     * \return tile's mesh and hybrid atlas as a tupple
+     * \return tile's mesh and hybrid atlas and tile flags as a tupple
      */
-    std::tuple<Mesh::pointer, opencv::HybridAtlas::pointer>
-    load(const vts::TileId &tileId, int quality) const;
+    Tile load(const TileId &tileId, int quality) const;
 
     /** Flushes data to disk.
      */

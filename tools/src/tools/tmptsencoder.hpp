@@ -53,7 +53,7 @@ public:
         bool fuseSubmeshes;
         SubmeshMergeOptions smMergeOptions;
 
-        boost::optional<vts::TileId> debug_tileId;
+        boost::optional<TileId> debug_tileId;
 
         Config()
             : textureQuality(85), dtmExtractionRadius(40.0)
@@ -101,6 +101,7 @@ private:
 
     TmpTileset tmpset_;
     TileIndex index_;
+    TileIndex deriveTree_;
     TileIndex validTree_;
 
     NtGenerator ntg_;

@@ -451,11 +451,15 @@ struct LodInfo {
      */
     int topDepth;
 
+    /** Common bottome -- depth where there are all data available.
+     */
+    int commonBottom;
+
     /** Max tree depth.
      */
     int bottomDepth;
 
-    LodInfo() : topDepth(), bottomDepth() {}
+    LodInfo() : topDepth(), commonBottom(), bottomDepth() {}
 
     int levelDiff() const { return bottomDepth - topDepth; }
 };
@@ -492,8 +496,8 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
     // find limits for data nodes: top/bottom and bottom common to all subtrees
     LodInfo lodInfo;
     lodInfo.topDepth = std::numeric_limits<int>::max();
+    lodInfo.commonBottom = std::numeric_limits<int>::max();
     lodInfo.bottomDepth = -1;
-    int commonBottom(std::numeric_limits<int>::max());
 
     {
         for (const auto item : tree_.nodes) {
@@ -501,7 +505,8 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
             if (!node.hasGeometry()) { continue; }
             if (node.children.empty()) {
                 // leaf
-                commonBottom = std::min(commonBottom, node.level);
+                lodInfo.commonBottom
+                    = std::min(lodInfo.commonBottom, node.level);
                 lodInfo.bottomDepth
                     = std::max(lodInfo.bottomDepth, node.level);
             }
@@ -511,7 +516,7 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
         }
 
         LOG(info2) << "Found top/common-bottom/bottom: "
-                   << lodInfo.topDepth << "/" << commonBottom
+                   << lodInfo.topDepth << "/" << lodInfo.commonBottom
                    << "/" << lodInfo.bottomDepth << ".";
     }
 
@@ -523,7 +528,7 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
     std::vector<const slpk::Node*> nodes;
     for (const auto &item : tree_.nodes) {
         const auto &node(item.second);
-        if ((node.level == commonBottom) && (node.hasGeometry())) {
+        if ((node.level == lodInfo.commonBottom) && (node.hasGeometry())) {
             nodes.push_back(&node);
         }
     }
@@ -560,7 +565,7 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
     }
 
     // shift between common depth and bottom depth
-    const auto lodShift(lodInfo.bottomDepth - commonBottom);
+    const auto lodShift(lodInfo.bottomDepth - lodInfo.commonBottom);
 
     for (const auto &item : mim) {
         const auto bl
@@ -657,12 +662,14 @@ private:
                       , vts::Lod lod, const vts::TileRange &tr
                       , const vts::Mesh &mesh
                       , const RegionInfo::list &textureRegions
-                      , const vts::opencv::Atlas &atlas);
+                      , const vts::opencv::Atlas &atlas
+                      , vts::TileIndex::Flag::value_type tileFlags);
 
     void cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
                  , const vts::Mesh &mesh
                  , const RegionInfo::list &textureRegions
-                 , const vts::opencv::Atlas &atlas);
+                 , const vts::opencv::Atlas &atlas
+                 , vts::TileIndex::Flag::value_type tileFlags);
 
     cv::Mat loadTexture(const slpk::Node &node, int index) const;
 
@@ -767,6 +774,13 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
             continue;
         }
 
+        /** (extra) Tile flags to be stored along generate tiles from this node
+         */
+        vts::TileIndex::Flag::value_type tileFlags(0);
+        if (node.level <= lodInfo.commonBottom) {
+            tileFlags |= vts::TileIndex::Flag::watertight;
+        }
+
         const vts::Lod localLod(bottomLod - fromBottom);
         const auto lod(localLod + rfNode.nodeId().lod);
 
@@ -844,7 +858,8 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
         // split to tiles
         LOG(info3) << "Splitting I3S node <" << node.id << "> to tiles in "
                    << lod << "/" << tr << ".";
-        splitToTiles(node, rfNode, lod, tr, mesh, textureRegions, atlas);
+        splitToTiles(node, rfNode, lod, tr, mesh, textureRegions, atlas
+                     , tileFlags);
     }
 }
 
@@ -853,7 +868,8 @@ void Cutter::splitToTiles(const slpk::Node &slpkNode
                           , vts::Lod lod, const vts::TileRange &tr
                           , const vts::Mesh &mesh
                           , const RegionInfo::list &textureRegions
-                          , const vts::opencv::Atlas &atlas)
+                          , const vts::opencv::Atlas &atlas
+                          , vts::TileIndex::Flag::value_type tileFlags)
 {
     if (config_.tileExtents) {
         // check for range validity
@@ -882,7 +898,7 @@ void Cutter::splitToTiles(const slpk::Node &slpkNode
         for (Index i = tr.ll(0); i <= ie; ++i) {
             vts::TileId tileId(lod, i, j);
             const auto node(root.child(tileId));
-            cutTile(slpkNode, node, mesh, textureRegions, atlas);
+            cutTile(slpkNode, node, mesh, textureRegions, atlas, tileFlags);
         }
     }
 }
@@ -890,7 +906,8 @@ void Cutter::splitToTiles(const slpk::Node &slpkNode
 void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
                      , const vts::Mesh &mesh
                      , const RegionInfo::list &textureRegions
-                     , const vts::opencv::Atlas &atlas)
+                     , const vts::opencv::Atlas &atlas
+                     , vts::TileIndex::Flag::value_type tileFlags)
 {
 
     // compute border condition (defaults to all available)
@@ -941,7 +958,7 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
     const auto tileId(node.nodeId());
 
     tools::repack(tileId, clipped, clippedAtlas, textureRegions);
-    tmpset_.store(tileId, clipped, clippedAtlas);
+    tmpset_.store(tileId, clipped, clippedAtlas, tileFlags);
 
     // save mesh
     if (0) {
