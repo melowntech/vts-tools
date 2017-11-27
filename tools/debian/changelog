@@ -1,3 +1,11 @@
+vts-tools (1.56) stable; urgency=low
+
+  * Large submeshes are split to smaller ones to fit in 64K vertex/face limits.
+  * SLPK: Since some input datasets do not have uniform bottom and generated
+          tiles lack data we fill in holes with data from parent tiles.
+        
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Mon, 27 Nov 2017 10:34:09 +0100
+
 vts-tools (1.55) stable; urgency=medium
 
   * Support for virtual surface names.
