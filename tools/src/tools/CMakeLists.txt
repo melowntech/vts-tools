@@ -11,6 +11,8 @@ set(vtstools_SOURCES
   tmptileset.hpp tmptileset.cpp
   repackatlas.hpp repackatlas.cpp
   tmptsencoder.hpp tmptsencoder.cpp
+  importutil.hpp importutil.cpp
+  tilemapping.hpp tilemapping.cpp
   )
 
 add_library(vtstools STATIC ${vtstools_SOURCES})
@@ -34,6 +36,23 @@ add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2vts ${MODULE_DEFINITIONS})
 buildsys_binary(vef2vts)
+
+# ------------------------------------------------------------------------
+# lodtree2vts tool
+define_module(BINARY lodtree2vts
+  DEPENDS vtstools ${common_DEPENDS}
+  lodtree>=1.0
+  TINYXML2 ASSIMP
+  )
+
+set(lodtree2vts_SOURCES
+  lodtree2vts.cpp
+)
+
+add_executable(lodtree2vts ${lodtree2vts_SOURCES})
+target_link_libraries(lodtree2vts ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(lodtree2vts ${MODULE_DEFINITIONS})
+buildsys_binary(lodtree2vts)
 
 # ------------------------------------------------------------------------
 # slpk2vts tool

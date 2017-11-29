@@ -32,8 +32,15 @@ include_directories(${JSONCPP_INCLUDE_DIRS})
 find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
+# Asset import library for loading mesh files in lodtree2vts
+# (get it with 'apt-get install libassimp-dev')
+find_package(Assimp REQUIRED)
+
 find_package(LibProc REQUIRED)
 include_directories(${LIBPROC_INCLUDE_DIR})
+
+find_package(TinyXML2 REQUIRED)
+include_directories(${TINYXML2_INCLUDE_DIR})
 
 # Protobuf: needed by gdal drivers
 find_package(Protobuf REQUIRED)
@@ -61,6 +68,7 @@ add_subdirectory(src/vts-libs)
 # format decoding libraries
 add_subdirectory(src/vef)
 add_subdirectory(src/slpk)
+add_subdirectory(src/lodtree)
 
 # tools
 add_subdirectory(src/tools)
