@@ -1,3 +1,9 @@
+vts-tools (1.57) stable; urgency=low
+
+  * Sporting brand new lodtree2vts (well, moved from internal)
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Wed, 29 Nov 2017 17:01:29 +0100
+
 vts-tools (1.56) stable; urgency=low
 
   * Large submeshes are split to smaller ones to fit in 64K vertex/face limits.
