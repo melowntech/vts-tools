@@ -37,7 +37,7 @@
 
 #include <opencv2/highgui/highgui.hpp>
 
-#include "lodtreefile.hpp"
+#include "lodtree/lodtreefile.hpp"
 
 #include "./tilemapping.hpp"
 #include "./importutil.hpp"
@@ -47,6 +47,7 @@ namespace vr = vtslibs::registry;
 namespace vts = vtslibs::vts;
 namespace vt = vtslibs::tools;
 namespace tools = vtslibs::vts::tools;
+namespace fs = boost::filesystem;
 namespace po = boost::program_options;
 namespace ublas = boost::numeric::ublas;
 
@@ -58,7 +59,7 @@ typedef vts::opencv::HybridAtlas HybridAtlas;
 
 struct InputTile : public tools::InputTile
 {
-    const lt::LodTreeNode *node;
+    const lodtree::LodTreeNode *node;
     const geo::SrsDefinition *srs;
 
     math::Extents2 extents;
@@ -69,7 +70,7 @@ struct InputTile : public tools::InputTile
     virtual math::Points2 projectCorners(
             const vr::ReferenceFrame::Division::Node &node) const;
 
-    InputTile(int id, int depth, const lt::LodTreeNode *node,
+    InputTile(int id, int depth, const lodtree::LodTreeNode *node,
               const geo::SrsDefinition &srs)
         : tools::InputTile(id, depth), node(node), srs(&srs)
     {}
@@ -258,7 +259,7 @@ void Model::load(const roarchive::RoArchive &archive
 
     Assimp::Importer imp;
     imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
-    const auto &scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto &scene(lodtree::readScene(imp, archive, path, aiProcess_Triangulate));
 
     // TODO: error checking
 
@@ -272,7 +273,7 @@ void Model::load(const roarchive::RoArchive &archive
 
         for (unsigned i = 0; i < aimesh->mNumVertices; i++)
         {
-            math::Point3 pt(origin + lt::point3(aimesh->mVertices[i]));
+            math::Point3 pt(origin + lodtree::point3(aimesh->mVertices[i]));
             submesh.vertices.push_back(pt);
 
             const aiVector3D &tc(aimesh->mTextureCoords[0][i]);
@@ -294,7 +295,7 @@ void Model::load(const roarchive::RoArchive &archive
 
         fs::path texPath(path.parent_path() / textureFile(scene, aimesh, 0));
         LOG(info2) << "Loading " << texPath;
-        atlas.add(lt::readTexture(archive, texPath, true));
+        atlas.add(lodtree::readTexture(archive, texPath, true));
     }
 }
 
@@ -579,7 +580,7 @@ void Encoder::finish(vts::TileSet &ts)
 
 //// main //////////////////////////////////////////////////////////////////////
 
-void collectInputTiles(const lt::LodTreeNode &node, unsigned depth,
+void collectInputTiles(const lodtree::LodTreeNode &node, unsigned depth,
                        unsigned maxDepth, InputTile::list &list,
                        const geo::SrsDefinition &srs)
 {
@@ -606,7 +607,7 @@ int imageArea(const roarchive::RoArchive &archive, const fs::path &path)
     }
 
     // fallback: do load the image
-    auto img(lt::readTexture(archive, path));
+    auto img(lodtree::readTexture(archive, path));
 
     return img.rows * img.cols;
 }
@@ -652,7 +653,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
 
     Assimp::Importer imp;
     imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
-    const auto *scene(lt::readScene(imp, archive, path, aiProcess_Triangulate));
+    const auto *scene(lodtree::readScene(imp, archive, path, aiProcess_Triangulate));
 
     tile.extents = math::Extents2(math::InvalidExtents{});
     tile.sdsArea = 0.0;
@@ -668,7 +669,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
         math::Points3d physPts(mesh->mNumVertices);
         for (unsigned i = 0; i < mesh->mNumVertices; i++)
         {
-            math::Point3 pt(tile.node->origin + lt::point3(mesh->mVertices[i]));
+            math::Point3 pt(tile.node->origin + lodtree::point3(mesh->mVertices[i]));
             math::update(tile.extents, pt);
             physPts[i] = csconv(pt);
         }
@@ -698,9 +699,9 @@ void calcModelExtents(const roarchive::RoArchive &archive
 
             tile.sdsArea += 0.5*norm_2(math::crossProduct(b - a, c - a));
 
-            math::Point3 ta(lt::point3(mesh->mTextureCoords[0][face.mIndices[0]]));
-            math::Point3 tb(lt::point3(mesh->mTextureCoords[0][face.mIndices[1]]));
-            math::Point3 tc(lt::point3(mesh->mTextureCoords[0][face.mIndices[2]]));
+            math::Point3 ta(lodtree::point3(mesh->mTextureCoords[0][face.mIndices[0]]));
+            math::Point3 tb(lodtree::point3(mesh->mTextureCoords[0][face.mIndices[1]]));
+            math::Point3 tc(lodtree::point3(mesh->mTextureCoords[0][face.mIndices[2]]));
 
             tile.texArea += 0.5*norm_2(math::crossProduct(tb - ta, tc - ta))
                                *imgArea;
@@ -711,7 +712,7 @@ void calcModelExtents(const roarchive::RoArchive &archive
 int LodTree2Vts::run()
 {
     roarchive::RoArchive archive
-        (input_, { lt::mainXmlFileName, lt::alternativeXmlFileName });
+        (input_, { lodtree::mainXmlFileName, lodtree::alternativeXmlFileName });
 
     math::Point3 offset(config_.offsetX, config_.offsetY, config_.offsetZ);
     if (norm_2(offset) > 0.) {
@@ -719,7 +720,7 @@ int LodTree2Vts::run()
     }
 
     // parse the XMLs
-    lt::LodTreeExport lte(archive, offset);
+    lodtree::LodTreeExport lte(archive, offset);
 
     // TODO: error checking (empty?)
     auto inputSrs(lte.srs);
