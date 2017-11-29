@@ -52,3 +52,6 @@
 [submodule "externals/libminiball"]
 	path = externals/libminiball
 	url = https://github.com/Melown/libminiball
+[submodule "externals/liblodtree"]
+	path = externals/liblodtree
+	url = https://github.com/Melown/liblodtree.git
