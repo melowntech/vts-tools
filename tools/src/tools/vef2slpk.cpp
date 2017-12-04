@@ -451,7 +451,7 @@ Setup makeSetup(const Config &config, const vef::Archive &archive)
 
     setup.maxLod = std::round(optimalLod);
 
-    if (setup.depth > (setup.maxLod + 1)) {
+    if (setup.depth > (setup.maxLod + 1U)) {
         setup.maxLod = setup.depth - 1;
     }
 
