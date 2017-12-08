@@ -849,7 +849,7 @@ public:
         , ti_(ts.tileIndex()), fullTree_(ti_)
         , sceneExtents_(math::InvalidExtents{})
     {
-        fullTree_.complete();
+        fullTree_.makeAbsolute().complete();
     }
 
     void operator()(/**vt::ExternalProgress &progress*/);
