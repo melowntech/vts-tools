@@ -1,3 +1,9 @@
+vts-tools (1.58) stable; urgency=low
+
+  * vef2slpk: fixed tile tree generation
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Fri, 08 Dec 2017 10:24:59 +0100
+
 vts-tools (1.57) stable; urgency=low
 
   * Sporting brand new lodtree2vts (well, moved from internal)
