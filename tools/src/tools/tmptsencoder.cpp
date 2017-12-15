@@ -220,6 +220,13 @@ const auto mergeExtraOptions([]() -> merge::ExtraOptions
     return eo;
 }());
 
+const auto mergeExtraOptionsInfluenced([]() -> merge::ExtraOptions
+{
+    auto eo(mergeExtraOptions);
+    eo.checkCoverageForSingleSources = true;
+    return eo;
+}());
+
 const merge::TileSource emptyTileSource;
 
 typedef std::tuple<Mesh::pointer, HybridAtlas::pointer> MeshResult;
@@ -238,10 +245,12 @@ struct MergeConstraints : merge::MergeConstraints {
         }
     }
 
-    virtual bool feasible(const merge::Output&) const {
+    virtual bool feasible(const merge::Output &output) const {
+        if (output.source.mesh.empty()) { return false; }
+
         if (influencedOnly) {
-            // ha! this tile would have some content but we just need to know
-            // about it
+            // ha! this tile would have some content but we just need to
+            // know about it
             tileResult.influenced();
             return false;
         }
@@ -276,7 +285,10 @@ MeshResult glueHolesFromParent(const TileId &tileId
          (tileId, nodeInfo, input
           , parent.userDataWithDefault(emptyTileSource)
           , MergeConstraints(flags, tileResult, influencedOnly)
-          , mergeOptions, mergeExtraOptions));
+          , mergeOptions
+          , (influencedOnly
+             ? mergeExtraOptionsInfluenced
+             : mergeExtraOptions)));
 
     // store used sources
     tileResult.userData(result.source);
