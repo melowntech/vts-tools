@@ -24,6 +24,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <boost/logic/tribool.hpp>
+
 #include "vts-libs/vts/meshop.hpp"
 #include "vts-libs/vts/tileset/merge.hpp"
 #include "vts-libs/registry/po.hpp"
@@ -98,9 +100,13 @@ void TmpTsEncoder::prepare()
     deriveTree_ = index_ = tmpset_.tileIndex();
 
     // derive tree: every tile not in index_ is to be derived
-    deriveTree_.conditionalRound
+    // every alien marked tile will have its children marked as well
+    deriveTree_
+        .conditionalRound
         (TileIndex::Flag::mesh | TileIndex::Flag::watertight
-         , TileIndex::Flag::mesh);
+         , TileIndex::Flag::mesh)
+        .distributeFlags(TileIndex::Flag::alien)
+        ;
 
     // make valid tree complete from root
     validTree_ = deriveTree_;
@@ -218,12 +224,42 @@ const merge::TileSource emptyTileSource;
 
 typedef std::tuple<Mesh::pointer, HybridAtlas::pointer> MeshResult;
 
+struct MergeConstraints : merge::MergeConstraints {
+    MergeConstraints(TileIndex::Flag::value_type flags
+                     , Encoder::TileResult &tileResult
+                     , bool influencedOnly)
+        : merge::MergeConstraints(!(flags & TileIndex::Flag::watertight))
+        , tileResult(tileResult)
+        , influencedOnly(influencedOnly)
+    {
+        if (influencedOnly) {
+            // default to no data
+            tileResult.noDataYet();
+        }
+    }
+
+    virtual bool feasible(const merge::Output&) const {
+        if (influencedOnly) {
+            // ha! this tile would have some content but we just need to know
+            // about it
+            tileResult.influenced();
+            return false;
+        }
+
+        return true;
+    }
+
+    Encoder::TileResult &tileResult;
+    bool influencedOnly;
+};
+
 MeshResult glueHolesFromParent(const TileId &tileId
                                , const NodeInfo &nodeInfo
                                , const Encoder::TileResult &parent
                                , const Mesh::pointer &mesh
                                , const HybridAtlas::pointer &atlas
                                , TileIndex::Flag::value_type flags
+                               , bool influencedOnly
                                , Encoder::TileResult &tileResult)
 {
     merge::Input::list input;
@@ -239,7 +275,7 @@ MeshResult glueHolesFromParent(const TileId &tileId
         (merge::mergeTile
          (tileId, nodeInfo, input
           , parent.userDataWithDefault(emptyTileSource)
-          , merge::MergeConstraints(!(flags & TileIndex::Flag::watertight))
+          , MergeConstraints(flags, tileResult, influencedOnly)
           , mergeOptions, mergeExtraOptions));
 
     // store used sources
@@ -257,14 +293,19 @@ Encoder::TileResult
 TmpTsEncoder::generate(const TileId &tileId, const NodeInfo &nodeInfo
                        , const TileResult &parent)
 {
-    bool derive(false);
+    boost::tribool derive(false);
     if (!index_.get(tileId)) {
-        if (!(deriveTree_.get(tileId) & TileIndex::Flag::mesh)) {
+        const auto dv(deriveTree_.get(tileId));
+        if (dv & TileIndex::Flag::mesh) {
+            // we are trying to fully derive a tile from parent data
+            derive = true;
+        } else if (dv & TileIndex::Flag::alien) {
+            // deriving but not generating tile, only flag "influenced" will be
+            // stored in the output
+            derive = boost::indeterminate;
+        } else {
             return TileResult::Result::noDataYet;
         }
-
-        // we are trying to fully derive a tile from parent data
-        derive = true;
     }
 
     // dst SDS -> dst physical
@@ -299,10 +340,20 @@ TmpTsEncoder::generate(const TileId &tileId, const NodeInfo &nodeInfo
     // glue holes from parent
     std::tie(mesh, atlas)
         = glueHolesFromParent(tileId, nodeInfo, parent, mesh, atlas
-                              , flags, result);
+                              , flags, boost::indeterminate(derive)
+                              , result);
+
+    // influenced tile -> stop here
+    if (boost::indeterminate(derive)) {
+        ++progress_;
+        if (result.result() != TileResult::Result::influenced) {
+            updateEstimatedTileCount(-1);
+        }
+        return result;
+    }
 
     // sanity check
-     if (!mesh || mesh->empty()) {
+    if (!mesh || mesh->empty()) {
         if (!derive) {
             LOG(warn3) << "Generated non-derived empty tile!";
         }
