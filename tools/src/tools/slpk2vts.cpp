@@ -778,7 +778,13 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
          */
         vts::TileIndex::Flag::value_type tileFlags(0);
         if (node.level <= lodInfo.commonBottom) {
+            // mark all tiles not below common bottom level as watertight
             tileFlags |= vts::TileIndex::Flag::watertight;
+
+            if (node.level == lodInfo.commonBottom) {
+                // mark all tiles at commom bottom level as alien
+                tileFlags |= vts::TileIndex::Flag::alien;
+            }
         }
 
         const vts::Lod localLod(bottomLod - fromBottom);
