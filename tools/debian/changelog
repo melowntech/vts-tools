@@ -1,3 +1,9 @@
+vts-tools (1.59) stable; urgency=low
+
+  * Marking "influenced" tiles in output tileindex (slpk2vts so far).
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Fri, 15 Dec 2017 16:01:57 +0100
+
 vts-tools (1.58) stable; urgency=low
 
   * vef2slpk: fixed tile tree generation
