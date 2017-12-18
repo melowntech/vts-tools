@@ -1,3 +1,9 @@
+vts-tools (1.61) stable; urgency=low
+
+  * Generating empty metanodes for influenced tiles to make interface orthogonal.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Mon, 18 Dec 2017 17:18:11 +0100
+
 vts-tools (1.60) stable; urgency=low
 
   * Fixed deriveMetaIndex to ignore influenced tiles.
