@@ -21,7 +21,7 @@ include buildsys/cmake/include/debian.mk
 # we want to use gzip since default xz takes ages to compress
 # (the penalty 2x size of output)
 override_dh_builddeb:
-        dh_builddeb -- -Zgzip
+	dh_builddeb -- -Zgzip
 
 # ignore these:
 override_dh_auto_test:
