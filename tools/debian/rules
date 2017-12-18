@@ -18,6 +18,11 @@ INSTALL_COMPONENTS_TOOLS=vts-tools
 # include cmake debian support
 include buildsys/cmake/include/debian.mk
 
+# we want to use gzip since default xz takes ages to compress
+# (the penalty 2x size of output)
+override_dh_builddeb:
+        dh_builddeb -- -Zgzip
+
 # ignore these:
 override_dh_auto_test:
 override_dh_installcatalogs:
