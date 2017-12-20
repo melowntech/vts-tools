@@ -1,3 +1,9 @@
+vts-tools (1.62) stable; urgency=low
+
+  * Fixed reading of ZIP archives with data-descriptors.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Wed, 20 Dec 2017 17:33:43 +0100
+
 vts-tools (1.61) stable; urgency=low
 
   * Generating empty metanodes for influenced tiles to make interface orthogonal.
