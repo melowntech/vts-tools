@@ -1,5 +1,5 @@
 set(common_DEPENDS
-  dbglog>=1.4 vts-libs>=2.8 service>=1.6
+  dbglog>=1.4 vts-libs>=2.8 service>=1.7
   )
 
 # support library for VTS tools
