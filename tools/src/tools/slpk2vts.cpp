@@ -55,7 +55,7 @@
 
 #include "./tmptsencoder.hpp"
 #include "./repackatlas.hpp"
-
+#include "./analyze.hpp"
 
 namespace po = boost::program_options;
 namespace bio = boost::iostreams;
@@ -286,68 +286,6 @@ private:
 
 // ------------------------------------------------------------------------
 
-double bestLod(const Config &config
-               , const vts::NodeInfo &rfNode
-               , const vts::SubMeshArea &area)
-{
-    const double texelArea(area.mesh / area.internalTexture);
-
-    const auto optimalTileArea
-        (math::area(config.optimalTextureSize) * texelArea);
-    const auto optimalTileCount(rfNode.extents().area()
-                                / optimalTileArea);
-    return (0.5 * std::log2(optimalTileCount));
-}
-
-inline void updateExtents(math::Extents2 &extents, const vts::SubMesh &sm)
-{
-    for (const auto &p : sm.vertices) {
-        update(extents, p(0), p(1));
-    }
-}
-
-inline void updateExtents(math::Extents2 &extents, const vts::Mesh &mesh)
-{
-    for (const auto &sm : mesh) {
-        updateExtents(extents, sm);
-    }
-}
-
-inline math::Extents2 computeExtents(const vts::Mesh &mesh)
-{
-    math::Extents2 extents(math::InvalidExtents{});
-    updateExtents(extents, mesh);
-    return extents;
-}
-
-struct MeshInfo {
-    vts::SubMeshArea area;
-    math::Extents2 extents;
-
-    typedef std::map<const vts::NodeInfo*, MeshInfo> map;
-
-    MeshInfo() : extents(math::InvalidExtents{}) {}
-
-    operator bool() const { return area.internalTexture; }
-
-    void update(const vts::SubMesh &mesh, const math::Size2 &txSize)
-    {
-        const auto a(vts::area(mesh));
-        area.internalTexture += (a.internalTexture * math::area(txSize));
-        area.mesh += a.mesh;
-        updateExtents(extents, mesh);
-    }
-
-    MeshInfo& operator+=(const MeshInfo &o) {
-        if (!o) { return *this; }
-
-        area.mesh += o.area.mesh;
-        area.internalTexture += o.area.internalTexture;
-        extents = unite(extents, o.extents);
-        return *this;
-    }
-};
-
 void remapTcToRegion(vts::SubMesh &sm, const vts::FaceOriginList &faceOrigin
                      , const RegionInfo &ri)
 {
@@ -382,13 +320,13 @@ void remapTcToRegion(vts::SubMesh &sm, const vts::FaceOriginList &faceOrigin
     }
 }
 
-MeshInfo measureMesh(const vts::NodeInfo &rfNode
-                     , const vts::CsConvertor conv
-                     , const vts::Mesh &mesh
-                     , const RegionInfo::list &regions
-                     , const std::vector<math::Size2> &sizes)
+tools::MeshInfo measureMesh(const vts::NodeInfo &rfNode
+                            , const vts::CsConvertor conv
+                            , const vts::Mesh &mesh
+                            , const RegionInfo::list &regions
+                            , const std::vector<math::Size2> &sizes)
 {
-    MeshInfo mi;
+    tools::MeshInfo mi;
 
     auto isizes(sizes.begin());
     auto iregions(regions.begin());
@@ -429,78 +367,26 @@ MeshInfo measureMesh(const vts::NodeInfo &rfNode
     return mi;
 }
 
-struct LodParams {
-    math::Extents2 meshExtents;
-    vts::Lod lod;
-
-    operator vts::Lod() const { return lod; }
-
-    LodParams(const math::Extents2 &meshExtents = math::Extents2()
-              , vts::Lod lod = 0)
-        : meshExtents(meshExtents), lod(lod)
-    {}
-};
-
-struct LodInfo {
-    /** Rf subtree root to bottom lod mapping.
-     */
-    std::map<const vts::NodeInfo*, LodParams> localLods;
-
-    /** Common min tree depth.
-     *  This is depth where there are data available in all nodes.
-     */
-    int topDepth;
-
-    /** Common bottome -- depth where there are all data available.
-     */
-    int commonBottom;
-
-    /** Max tree depth.
-     */
-    int bottomDepth;
-
-    LodInfo() : topDepth(), commonBottom(), bottomDepth() {}
-
-    int levelDiff() const { return bottomDepth - topDepth; }
-};
-
-class Analyzer {
-public:
-    Analyzer(const Config &config
-             , const vts::NodeInfo::list &nodes
-             , const slpk::Tree &tree
-             , const slpk::Archive &archive)
-        : config_(config)
-        , nodes_(nodes), tree_(tree), archive_(archive)
-        , inputSrs_(archive_.srs())
-    {}
-
-    LodInfo run(vt::ExternalProgress &progress) const;
-
-private:
-    typedef std::pair<int, int> DepthRange;
-
-    const Config &config_;
-    const vts::NodeInfo::list &nodes_;
-    const slpk::Tree &tree_;
-    const slpk::Archive &archive_;
-    const geo::SrsDefinition inputSrs_;
-};
-
-LodInfo Analyzer::run(vt::ExternalProgress &progress) const
+tools::LodInfo analyze(vt::ExternalProgress &progress
+                       , const Config &config
+                       , const vts::NodeInfo::list &nodes
+                       , const slpk::Tree &tree
+                       , const slpk::Archive &archive)
 {
-    LOG(info3) << "Analyzing input dataset (" << tree_.nodes.size()
+    LOG(info3) << "Analyzing input dataset (" << tree.nodes.size()
                << " I3S nodes).";
-    progress.expect(tree_.nodes.size());
+    progress.expect(tree.nodes.size());
+
+    const geo::SrsDefinition inputSrs(archive.srs());
 
     // find limits for data nodes: top/bottom and bottom common to all subtrees
-    LodInfo lodInfo;
+    tools::LodInfo lodInfo;
     lodInfo.topDepth = std::numeric_limits<int>::max();
     lodInfo.commonBottom = std::numeric_limits<int>::max();
     lodInfo.bottomDepth = -1;
 
     {
-        for (const auto item : tree_.nodes) {
+        for (const auto item : tree.nodes) {
             const auto &node(item.second);
             if (!node.hasGeometry()) { continue; }
             if (node.children.empty()) {
@@ -520,41 +406,41 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
                    << "/" << lodInfo.bottomDepth << ".";
     }
 
-    MeshInfo::map mim;
+    tools::MeshInfo::map mim;
 
     // accumulate mesh area (both 3D and 2D) in all nodes at common bottom depth
 
     // collect nodes for OpenMP
-    std::vector<const slpk::Node*> nodes;
-    for (const auto &item : tree_.nodes) {
+    std::vector<const slpk::Node*> treeNodes;
+    for (const auto &item : tree.nodes) {
         const auto &node(item.second);
         if ((node.level == lodInfo.commonBottom) && (node.hasGeometry())) {
-            nodes.push_back(&node);
+            treeNodes.push_back(&node);
         }
     }
 
     auto *pmim(&mim);
-    const auto *pnodes(&nodes);
+    const auto *pnodes(&treeNodes);
 
     UTILITY_OMP(parallel for shared(pmim) schedule(dynamic))
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
+    for (std::size_t i = 0; i < pnodes->size(); ++i) {
         const auto &node(*(*pnodes)[i]);
 
         // load geometry
         VtsMeshLoader loader;
-        archive_.loadGeometry(loader, node);
+        archive.loadGeometry(loader, node);
 
         // measure textures
         std::vector<math::Size2> sizes;
         {
             for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
-                sizes.push_back(archive_.textureSize(node, i));
+                sizes.push_back(archive.textureSize(node, i));
             }
         }
 
         // compute mesh are in each RF node
-        for (const auto &rfNode : nodes_) {
-            const vts::CsConvertor conv(inputSrs_, rfNode.srs());
+        for (const auto &rfNode : nodes) {
+            const vts::CsConvertor conv(inputSrs, rfNode.srs());
             const auto mi(measureMesh(rfNode, conv, loader.mesh()
                                       , loader.regions(), sizes));
             if (mi) {
@@ -569,75 +455,16 @@ LodInfo Analyzer::run(vt::ExternalProgress &progress) const
 
     for (const auto &item : mim) {
         const auto bl
-            (lodShift + bestLod(config_, *item.first, item.second.area));
+            (lodShift + tools::bestLod(*item.first, item.second.area
+                                       , config.optimalTextureSize));
         const auto &lod(lodInfo.localLods[item.first]
-                        = LodParams(item.second.extents, std::round(bl)));
+                        = tools::LodParams(item.second.extents
+                                           , std::round(bl)));
         LOG(info2) << "Assigned LOD " << lod << " for bottom in subtree "
                    << item.first->srs() << ".";
     }
 
     return lodInfo;
-}
-
-void computeNavtileInfo(const Config &config, const vts::NodeInfo &node
-                        , const LodParams lodParams, const LodInfo &lodInfo
-                        , vts::NtGenerator &ntg)
-{
-    // find nt lod by nt lod pixelsize
-    const auto nodeId(node.nodeId());
-
-    // build LOD range
-    vts::LodRange lr(0, nodeId.lod + lodParams.lod);
-
-    auto lodDiff(lodInfo.levelDiff());
-    if (lodDiff > lodParams.lod) {
-        lr.min = nodeId.lod;
-    } else {
-        lr.min = nodeId.lod + lodParams.lod - lodDiff;
-    }
-
-    // fix limit for tile extents
-    if (config.tileExtents && (config.tileExtents->lod >= node.rootLod())) {
-        lr.min = config.tileExtents->lod;
-    }
-
-    // nt lod, start with maximum lod
-    vts::Lod ntLod(lr.max);
-
-    // sample one tile at bottom lod
-    const vts::NodeInfo n(node.child
-                          (vts::lowestChild(nodeId, lodParams.lod)));
-
-    // tile size at bottom lod
-    const auto ts(math::size(n.extents()));
-
-    // take center of extents
-    const auto ntCenter(math::center(lodParams.meshExtents));
-
-    // navtile size (in pixels)
-    auto ntSize(vts::NavTile::size());
-    ntSize.width -= 1;
-    ntSize.height -= 1;
-
-    // SRS factors at mesh center
-    const auto f(geo::SrsFactors(node.srsDef())(ntCenter));
-
-    // calculate pixel size from ration between tile area (in "beans") and
-    // navtile size in pixels; ration is down scaled by area of srs factors
-    // scales
-    auto pixelSize(std::sqrt
-                   (math::area(ts)
-                    / (math::area(ntSize)
-                       * f.meridionalScale * f.parallelScale)));
-
-    // find best matching lod
-    // FIXME: probably needs to be fixed
-    while ((ntLod > lr.min) && (pixelSize < config.ntLodPixelSize)) {
-        pixelSize *= 2.0;
-        --ntLod;
-    }
-
-    ntg.addAccumulator(node.srs(), vts::LodRange(lr.min, ntLod), pixelSize);
 }
 
 // ------------------------------------------------------------------------
@@ -655,7 +482,7 @@ public:
     void run(vt::ExternalProgress &progress);
 
 private:
-    void cutNode(const slpk::Node &node, const LodInfo &lodInfo);
+    void cutNode(const slpk::Node &node, const tools::LodInfo &lodInfo);
 
     void splitToTiles(const slpk::Node &slpkNode
                       , const vts::NodeInfo &root
@@ -689,12 +516,13 @@ void Cutter::run(vt::ExternalProgress &progress)
     const auto tree(archive_.loadTree());
 
     // analyze first
-    const auto lodInfo(Analyzer(config_, nodes_, tree, archive_)
-                       .run(progress));
+    const auto lodInfo(analyze(progress, config_, nodes_, tree, archive_));
 
     // compute navtile information (adds accumulators)
     for (const auto &item : lodInfo.localLods) {
-        computeNavtileInfo(config_, *item.first, item.second, lodInfo, ntg_);
+        tools::computeNavtileInfo(*item.first, item.second, lodInfo, ntg_
+                                  , config_.tileExtents
+                                  , config_.ntLodPixelSize);
     }
 
     // update progress
@@ -735,24 +563,7 @@ cv::Mat Cutter::loadTexture(const slpk::Node &node, int index) const
     return tex;
 }
 
-vts::TileRange computeTileRange(const math::Extents2 &nodeExtents
-                                , vts::Lod localLod
-                                , const math::Extents2 &meshExtents)
-{
-    vts::TileRange r(math::InvalidExtents{});
-    const auto ts(vts::tileSize(nodeExtents, localLod));
-    const auto origin(math::ul(nodeExtents));
-
-    for (const auto &p : vertices(meshExtents)) {
-        update(r, vts::TileRange::point_type
-               ((p(0) - origin(0)) / ts.width
-                , (origin(1) - p(1)) / ts.height));
-    }
-
-    return r;
-}
-
-void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
+void Cutter::cutNode(const slpk::Node &node, const tools::LodInfo &lodInfo)
 {
     VtsMeshLoader loader;
     archive_.loadGeometry(loader, node);
@@ -850,8 +661,8 @@ void Cutter::cutNode(const slpk::Node &node, const LodInfo &lodInfo)
         if (mesh.empty()) { continue; }
 
         // compute local tile range
-        auto tr(computeTileRange(rfNode.extents(), localLod
-                                 , computeExtents(mesh)));
+        auto tr(tools::computeTileRange(rfNode.extents(), localLod
+                                        , tools::computeExtents(mesh)));
 
         // convert local tilerange to global tilerange
         {
@@ -965,51 +776,6 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
 
     tools::repack(tileId, clipped, clippedAtlas, textureRegions);
     tmpset_.store(tileId, clipped, clippedAtlas, tileFlags);
-
-    // save mesh
-    if (0) {
-        // localize mesh
-        auto tmp(clipped);
-        const auto c(math::center(node.extents()));
-        for (auto &sm : tmp.submeshes) {
-            for (auto &v : sm.vertices) {
-                v -= c;
-            }
-        }
-
-        const fs::path path
-            ("dump/" + slpkNode.id + "-"
-             + boost::lexical_cast<std::string>(tileId));
-        fs::create_directories(path);
-
-        std::string mtlLib;
-        mtlLib = "textures.mtl";
-
-        std::ofstream f((path / mtlLib).string());
-
-        int index(0);
-        for (const auto &image : clippedAtlas.get()) {
-            const auto textureName(str(boost::format("%s.jpg") % index));
-            cv::imwrite((path / textureName).string(), image);
-            f << "newmtl " << index
-              << "\nmap_Kd " << textureName
-              << "\n";
-
-            ++index;
-        }
-        f.close();
-
-        index = 0;
-        for (const auto &sm : tmp.submeshes) {
-            const auto objName(str(boost::format("%s.obj") % index));
-
-            vts::saveSubMeshAsObj(path / objName, sm
-                                  , index, &clippedAtlas, mtlLib);
-
-            ++index;
-        }
-    }
-
 }
 
 // ------------------------------------------------------------------------
