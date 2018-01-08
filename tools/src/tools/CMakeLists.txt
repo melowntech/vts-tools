@@ -11,8 +11,9 @@ set(vtstools_SOURCES
   tmptileset.hpp tmptileset.cpp
   repackatlas.hpp repackatlas.cpp
   tmptsencoder.hpp tmptsencoder.cpp
-  importutil.hpp importutil.cpp
-  tilemapping.hpp tilemapping.cpp
+  importutil.hpp importutil.cpp # to be nuked
+  tilemapping.hpp tilemapping.cpp # to be nuked
+  analyze.hpp analyze.cpp
   )
 
 add_library(vtstools STATIC ${vtstools_SOURCES})
@@ -41,7 +42,7 @@ buildsys_binary(vef2vts)
 # lodtree2vts tool
 define_module(BINARY lodtree2vts
   DEPENDS vtstools ${common_DEPENDS}
-  lodtree>=1.0
+  lodtree>=1.1
   TINYXML2 ASSIMP
   )
 
