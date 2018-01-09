@@ -177,9 +177,6 @@ void LodTree2Vts::configuration(po::options_description &cmdline
                              , po::options_description &config
                              , po::positional_options_description &pd)
 {
-    vr::registryConfiguration(cmdline, vr::defaultPath());
-    vr::creditsConfiguration(cmdline);
-
     config_.configuration(cmdline);
 
     cmdline.add_options()
@@ -201,8 +198,6 @@ void LodTree2Vts::configuration(po::options_description &cmdline
 
 void LodTree2Vts::configure(const po::variables_map &vars)
 {
-    vr::registryConfigure(vars);
-
     config_.configure(vars);
 
     createMode_ = (vars.count("overwrite")
