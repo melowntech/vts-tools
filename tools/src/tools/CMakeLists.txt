@@ -3,27 +3,10 @@ set(common_DEPENDS
   vts-libs-tools-support>=2.8
   )
 
-# support library for VTS tools
-define_module(LIBRARY vtstools
-  DEPENDS ${common_DEPENDS}
-  )
-
-set(vtstools_SOURCES
-  tmptileset.hpp tmptileset.cpp
-  repackatlas.hpp repackatlas.cpp
-  tmptsencoder.hpp tmptsencoder.cpp
-  analyze.hpp analyze.cpp
-  )
-
-add_library(vtstools STATIC ${vtstools_SOURCES})
-buildsys_library(vtstools)
-target_link_libraries(vtstools ${MODULE_LIBRARIES})
-buildsys_target_compile_definitions(vtstools ${MODULE_DEFINITIONS})
-
 # ------------------------------------------------------------------------
 # vef2vts tool
 define_module(BINARY vef2vts
-  DEPENDS vtstools ${common_DEPENDS} vef>=1.2)
+  DEPENDS ${common_DEPENDS} vef>=1.2)
 set(vef2vts_SOURCES
   vef2vts.cpp)
 
@@ -40,7 +23,7 @@ buildsys_binary(vef2vts)
 # ------------------------------------------------------------------------
 # lodtree2vts tool
 define_module(BINARY lodtree2vts
-  DEPENDS vtstools ${common_DEPENDS}
+  DEPENDS ${common_DEPENDS}
   lodtree>=1.1
   TINYXML2
   )
@@ -57,7 +40,7 @@ buildsys_binary(lodtree2vts)
 # ------------------------------------------------------------------------
 # slpk2vts tool
 define_module(BINARY slpk2vts
-  DEPENDS vtstools ${common_DEPENDS} slpk>=1.2)
+  DEPENDS ${common_DEPENDS} slpk>=1.2)
 set(slpk2vts_SOURCES
   slpk2vts.cpp)
 
@@ -69,7 +52,7 @@ buildsys_binary(slpk2vts)
 # ------------------------------------------------------------------------
 # vef2slpk tool
 define_module(BINARY vef2slpk
-  DEPENDS vtstools ${common_DEPENDS} vef>=1.2 slpk>=1.2)
+  DEPENDS ${common_DEPENDS} vef>=1.2 slpk>=1.2)
 set(vef2slpk_SOURCES
   vef2slpk.cpp)
 

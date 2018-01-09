@@ -53,9 +53,9 @@
 
 #include "slpk/reader.hpp"
 
-#include "./tmptsencoder.hpp"
-#include "./repackatlas.hpp"
-#include "./analyze.hpp"
+#include "vts-libs/tools-support/tmptsencoder.hpp"
+#include "vts-libs/tools-support/repackatlas.hpp"
+#include "vts-libs/tools-support/analyze.hpp"
 
 namespace po = boost::program_options;
 namespace bio = boost::iostreams;

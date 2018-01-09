@@ -79,8 +79,8 @@
 #include "slpk/writer.hpp"
 #include "miniball/miniball.hpp"
 
-#include "./tmptileset.hpp"
-#include "./repackatlas.hpp"
+#include "vts-libs/tools-support/tmptileset.hpp"
+#include "vts-libs/tools-support/repackatlas.hpp"
 
 
 namespace po = boost::program_options;

@@ -37,9 +37,9 @@
 #include "vts-libs/tools-support/progress.hpp"
 #include "vts-libs/tools-support/assimp.hpp"
 
-#include "./tmptsencoder.hpp"
-#include "./repackatlas.hpp"
-#include "./analyze.hpp"
+#include "vts-libs/tools-support/tmptsencoder.hpp"
+#include "vts-libs/tools-support/repackatlas.hpp"
+#include "vts-libs/tools-support/analyze.hpp"
 
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
