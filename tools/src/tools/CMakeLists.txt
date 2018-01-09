@@ -1,5 +1,6 @@
 set(common_DEPENDS
   dbglog>=1.4 vts-libs>=2.8 service>=1.7
+  vts-libs-tools-support>=2.8
   )
 
 # support library for VTS tools
@@ -11,8 +12,6 @@ set(vtstools_SOURCES
   tmptileset.hpp tmptileset.cpp
   repackatlas.hpp repackatlas.cpp
   tmptsencoder.hpp tmptsencoder.cpp
-  importutil.hpp importutil.cpp # to be nuked
-  tilemapping.hpp tilemapping.cpp # to be nuked
   analyze.hpp analyze.cpp
   )
 
@@ -43,7 +42,7 @@ buildsys_binary(vef2vts)
 define_module(BINARY lodtree2vts
   DEPENDS vtstools ${common_DEPENDS}
   lodtree>=1.1
-  TINYXML2 ASSIMP
+  TINYXML2
   )
 
 set(lodtree2vts_SOURCES

@@ -3,10 +3,6 @@
 
 #include <tinyxml2.h>
 
-#include <assimp/Importer.hpp>
-#include <assimp/scene.h>
-#include <assimp/postprocess.h>
-
 #include <opencv2/highgui/highgui.hpp>
 
 #include "dbglog/dbglog.hpp"
@@ -25,6 +21,11 @@
 #include "service/cmdline.hpp"
 #include "service/verbosity.hpp"
 
+#include "imgproc/imagesize.hpp"
+
+#include "roarchive/roarchive.hpp"
+#include "lodtree/lodtreefile.hpp"
+
 #include "vts-libs/vts.hpp"
 #include "vts-libs/vts/encoder.hpp"
 #include "vts-libs/vts/meshop.hpp"
@@ -33,15 +34,12 @@
 #include "vts-libs/vts/ntgenerator.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 #include "vts-libs/vts/io.hpp"
-#include "vts-libs/tools/progress.hpp"
-
-#include "roarchive/roarchive.hpp"
-#include "lodtree/lodtreefile.hpp"
+#include "vts-libs/tools-support/progress.hpp"
+#include "vts-libs/tools-support/assimp.hpp"
 
 #include "./tmptsencoder.hpp"
 #include "./repackatlas.hpp"
 #include "./analyze.hpp"
-#include "./importutil.hpp"
 
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
@@ -236,70 +234,6 @@ usage
 
 // ------------------------------------------------------------------------
 
-fs::path textureFile(const ::aiScene *scene, const ::aiMesh *mesh
-                     , int channel)
-{
-    ::aiString texFile;
-    ::aiMaterial *mat = scene->mMaterials[mesh->mMaterialIndex];
-    mat->Get(AI_MATKEY_TEXTURE_DIFFUSE(channel), texFile);
-    return { texFile.C_Str() };
-}
-
-typedef std::vector<fs::path> TexturePaths;
-
-std::tuple<vts::Mesh, TexturePaths>
-loadLodTreeMesh(const roarchive::RoArchive &archive, const lodtree::Node &node)
-{
-    LOG(info1) << "Loading model from " << node.modelPath << ").";
-
-    Assimp::Importer imp;
-    imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
-    const auto &scene(lodtree::readScene(imp, archive, node.modelPath
-                                         , aiProcess_Triangulate));
-
-    std::tuple<vts::Mesh, TexturePaths> res;
-
-    auto &mesh(std::get<0>(res));
-    auto &texturePaths(std::get<1>(res));
-
-    // TODO: error checking
-
-    for (unsigned m = 0; m < scene->mNumMeshes; m++) {
-        vts::SubMesh submesh;
-
-        aiMesh *aimesh = scene->mMeshes[m];
-        // skip
-        if (!aimesh->mNumFaces) { continue; }
-
-        for (unsigned i = 0; i < aimesh->mNumVertices; i++) {
-            math::Point3 pt
-                (node.origin + lodtree::point3(aimesh->mVertices[i]));
-            submesh.vertices.push_back(pt);
-
-            const aiVector3D &tc(aimesh->mTextureCoords[0][i]);
-            submesh.tc.push_back({tc.x, tc.y});
-        }
-
-        for (unsigned i = 0; i < aimesh->mNumFaces; i++) {
-            assert(aimesh->mFaces[i].mNumIndices == 3);
-            unsigned int* idx(aimesh->mFaces[i].mIndices);
-            submesh.faces.emplace_back(idx[0], idx[1], idx[2]);
-            submesh.facesTc.emplace_back(idx[0], idx[1], idx[2]);
-        }
-
-        // remove duplicate vertices introduced by AssImp
-        tools::optimizeMesh(submesh);
-
-        mesh.add(submesh);
-        texturePaths.push_back(node.modelPath.parent_path()
-                               / textureFile(scene, aimesh, 0));
-    }
-
-    return res;
-}
-
-// ------------------------------------------------------------------------
-
 tools::MeshInfo measureMesh(const vts::NodeInfo &rfNode
                             , const vts::CsConvertor conv
                             , const vts::Mesh &mesh
@@ -396,16 +330,22 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
     for (std::size_t i = 0; i < pnodes->size(); ++i) {
         const auto &node(*(*pnodes)[i]);
 
+        Assimp::Importer imp;
+        imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
+
         // load geometry
         vts::Mesh mesh;
-        TexturePaths texturePaths;
-        std::tie(mesh, texturePaths) = loadLodTreeMesh
-            (archive.archive(), node);
-
-        // measure textures
         std::vector<math::Size2> sizes;
-        for (const auto &txPath : texturePaths) {
-            sizes.push_back(archive.textureSize(txPath));
+
+        {
+            tools::TextureStreams ts;
+            std::tie(mesh, ts) = tools::loadAssimpScene
+                (imp, archive.archive(), node.modelPath, node.origin);
+
+            // measure textures
+            for (const auto &is : ts) {
+                sizes.push_back(imgproc::imageSize(*is, is->path()));
+            }
         }
 
         // compute mesh are in each RF node
@@ -519,18 +459,24 @@ void Cutter::cutNode(const lodtree::Node &node, const tools::LodInfo &lodInfo)
 {
     const auto &roArchive(archive_.archive());
 
+    Assimp::Importer imp;
+    imp.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
+
     // load geometry
     vts::Mesh inMesh;
-    TexturePaths texturePaths;
-    std::tie(inMesh, texturePaths) = loadLodTreeMesh(roArchive, node);
-
-    // load textures
     vts::opencv::Atlas inAtlas;
-    for (const auto &txPath : texturePaths) {
-        const auto is(roArchive.istream(txPath));
-        LOG(info1) << "Loading texture from " << is->path() << ".";
-        auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
-        inAtlas.add(tex);
+
+    {
+        tools::TextureStreams ts;
+        std::tie(inMesh, ts) = tools::loadAssimpScene
+            (imp, roArchive, node.modelPath, node.origin);
+
+        // load textures
+        for (const auto &is : ts) {
+            LOG(info1) << "Loading texture from " << is->path() << ".";
+            auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
+            inAtlas.add(tex);
+        }
     }
 
     // for each valid rfnode

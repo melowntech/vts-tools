@@ -70,10 +70,10 @@
 #include "geo/csconvertor.hpp"
 #include "geo/enu.hpp"
 
-#include "vts-libs/tools/progress.hpp"
 #include "vts-libs/vts/mesh.hpp"
 #include "vts-libs/vts/meshop.hpp"
 #include "vts-libs/vts/tileop.hpp"
+#include "vts-libs/tools-support/progress.hpp"
 
 #include "vef/reader.hpp"
 #include "slpk/writer.hpp"

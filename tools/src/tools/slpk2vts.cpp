@@ -49,7 +49,7 @@
 #include "vts-libs/vts/math.hpp"
 #include "vts-libs/vts/opencv/atlas.hpp"
 #include "vts-libs/vts/ntgenerator.hpp"
-#include "vts-libs/tools/progress.hpp"
+#include "vts-libs/tools-support/progress.hpp"
 
 #include "slpk/reader.hpp"
 
