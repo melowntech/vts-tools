@@ -77,7 +77,7 @@
 
 #include "vef/reader.hpp"
 
-#include "vts-libs/tools-support/tmptileset.hpp"
+#include "vts-libs/tools-support/tmptsencoder.hpp"
 #include "vts-libs/tools-support/repackatlas.hpp"
 
 
@@ -93,33 +93,87 @@ namespace tools = vtslibs::vts::tools;
 
 namespace {
 
-struct Config {
+struct Config : tools::TmpTsEncoder::Config {
     std::string tilesetId;
     std::string referenceFrame;
-    vs::CreditIds credits;
-    int textureQuality;
     math::Size2 optimalTextureSize;
     double ntLodPixelSize;
-    double dtmExtractionRadius;
 
-    bool forceWatertight;
     boost::optional<vts::LodTileRange> tileExtents;
     double clipMargin;
     double borderClipMargin;
     double sigmaEditCoef;
-    bool resume;
-    bool keepTmpset;
 
     double zShift;
 
     Config()
-        : textureQuality(85), optimalTextureSize(256, 256)
-        , ntLodPixelSize(1.0), dtmExtractionRadius(40.0)
-        , forceWatertight(false), clipMargin(1.0 / 128.)
+        : optimalTextureSize(256, 256)
+        , ntLodPixelSize(1.0)
+        , clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5), resume(false), keepTmpset(false)
+        , sigmaEditCoef(1.5)
         , zShift(0.0)
     {}
+
+    void configuration(po::options_description &config) {
+        tools::TmpTsEncoder::Config::configuration(config);
+
+        config.add_options()
+            ("tilesetId", po::value(&tilesetId)->required()
+             , "Output tileset ID.")
+
+            ("referenceFrame", po::value(&referenceFrame)->required()
+             , "Destination reference frame. Must be different from input "
+             "tileset's referenceFrame.")
+
+            ("navtileLodPixelSize"
+             , po::value(&ntLodPixelSize)
+             ->default_value(ntLodPixelSize)->required()
+             , "Navigation data are generated at first LOD "
+             "(starting from root) "
+             "where pixel size (in navigation grid) is less or "
+             "equal to this value.")
+
+            ("clipMargin", po::value(&clipMargin)
+             ->default_value(clipMargin)
+             , "Margin (in fraction of tile dimensions) added to "
+             "tile extents in all 4 directions.")
+
+            ("tileExtents", po::value<vts::LodTileRange>()
+             , "Optional tile extents specidied in form lod/llx,lly:urx,ury. "
+             "When set, only tiles in that range and below are added to "
+             "the output.")
+
+            ("borderClipMargin", po::value(&borderClipMargin)
+             , "Margin (in fraction of tile dimensions) added to tile extents "
+             "where tile touches artificial border definied by tileExtents.")
+
+            ("tweak.optimalTextureSize", po::value(&optimalTextureSize)
+             ->default_value(optimalTextureSize)->required()
+             , "Size of ideal tile texture. Used to calculate fitting LOD from"
+             "mesh texel size. Do not modify.")
+
+            ("tweak.sigmaEditCoef", po::value(&sigmaEditCoef)
+             ->default_value(sigmaEditCoef)
+             , "Sigma editting coefficient. Meshes with best LOD "
+             "difference from mean best LOD lower than "
+             "sigmaEditCoef * sigma are assigned "
+             "round(mean best LOD).")
+
+            ("zShift", po::value(&zShift)
+             ->default_value(zShift)->required()
+             , "Manual height adjustment (value is "
+             "added to z component of all vertices).")
+            ;
+    }
+
+    void configure(const po::variables_map &vars) {
+        tools::TmpTsEncoder::Config::configure(vars);
+
+        if (vars.count("tileExtents")) {
+            tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
+        }
+    }
 };
 
 class Vef2Vts : public service::Cmdline
@@ -128,8 +182,7 @@ public:
     Vef2Vts()
         : service::Cmdline("vef2vts", BUILD_TARGET_VERSION)
         , createMode_(vts::CreateMode::failIfExists)
-    {
-    }
+    {}
 
 private:
     virtual void configuration(po::options_description &cmdline
@@ -158,8 +211,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
                              , po::options_description &config
                              , po::positional_options_description &pd)
 {
-    vr::registryConfiguration(cmdline, vr::defaultPath());
-    vr::creditsConfiguration(cmdline);
+    config_.configuration(cmdline);
 
     cmdline.add_options()
         ("output", po::value(&output_)->required()
@@ -167,71 +219,6 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("input", po::value(&input_)->required()
          , "Path to input VEF archive.")
         ("overwrite", "Existing tile set gets overwritten if set.")
-
-        ("tilesetId", po::value(&config_.tilesetId)->required()
-         , "Output tileset ID.")
-
-        ("referenceFrame", po::value(&config_.referenceFrame)->required()
-         , "Destination reference frame. Must be different from input "
-         "tileset's referenceFrame.")
-
-        ("textureQuality", po::value(&config_.textureQuality)
-         ->default_value(config_.textureQuality)->required()
-         , "Texture quality for JPEG texture encoding (0-100).")
-
-        ("navtileLodPixelSize"
-         , po::value(&config_.ntLodPixelSize)
-         ->default_value(config_.ntLodPixelSize)->required()
-         , "Navigation data are generated at first LOD (starting from root) "
-         "where pixel size (in navigation grid) is less or "
-         "equal to this value.")
-
-        ("dtmExtraction.radius"
-         , po::value(&config_.dtmExtractionRadius)
-         ->default_value(config_.dtmExtractionRadius)->required()
-         , "Radius (in meters) of DTM extraction element (in meters).")
-
-        ("force.watertight", po::value(&config_.forceWatertight)
-         ->default_value(false)->implicit_value(true)
-         , "Enforces full coverage mask to every generated tile even "
-         "when it is holey.")
-
-        ("clipMargin", po::value(&config_.clipMargin)
-         ->default_value(config_.clipMargin)
-         , "Margin (in fraction of tile dimensions) added to tile extents in "
-         "all 4 directions.")
-
-        ("tileExtents", po::value<vts::LodTileRange>()
-         , "Optional tile extents specidied in form lod/llx,lly:urx,ury. "
-         "When set, only tiles in that range and below are added to "
-         "the output.")
-
-        ("borderClipMargin", po::value(&config_.borderClipMargin)
-         , "Margin (in fraction of tile dimensions) added to tile extents "
-         "where tile touches artificial border definied by tileExtents.")
-
-        ("tweak.optimalTextureSize", po::value(&config_.optimalTextureSize)
-         ->default_value(config_.optimalTextureSize)->required()
-         , "Size of ideal tile texture. Used to calculate fitting LOD from"
-         "mesh texel size. Do not modify.")
-
-        ("tweak.sigmaEditCoef", po::value(&config_.sigmaEditCoef)
-         ->default_value(config_.sigmaEditCoef)
-         , "Sigma editting coefficient. Meshes with best LOD difference from "
-         "mean best LOD lower than sigmaEditCoef * sigma are assigned "
-         "round(mean best LOD).")
-
-        ("resume"
-         , "Resumes interrupted encoding. There must be complete (valid) "
-         "temporary tileset inside generated tileset. Use with caution.")
-        ("keepTmpset"
-         , "Keep temporary tileset intact on exit.")
-
-        ("zShift", po::value(&config_.zShift)
-         ->default_value(config_.zShift)->required()
-         , "Manual height adjustment (value is "
-         "added to z component of all vertices).")
-
         ;
 
     vt::progressConfiguration(config);
@@ -245,24 +232,12 @@ void Vef2Vts::configuration(po::options_description &cmdline
 
 void Vef2Vts::configure(const po::variables_map &vars)
 {
-    vr::registryConfigure(vars);
-    config_.credits = vr::creditsConfigure(vars);
+    config_.configure(vars);
 
     createMode_ = (vars.count("overwrite")
                    ? vts::CreateMode::overwrite
                    : vts::CreateMode::failIfExists);
 
-    if ((config_.textureQuality < 0) || (config_.textureQuality > 100)) {
-        throw po::validation_error
-            (po::validation_error::invalid_option_value, "textureQuality");
-    }
-
-    if (vars.count("tileExtents")) {
-        config_.tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
-    }
-
-    config_.resume = vars.count("resume");
-    config_.keepTmpset = vars.count("keepTmpset");
     epConfig_ = vt::configureProgress(vars);
 }
 
@@ -989,7 +964,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
                 try {
                     projected.push_back(conv(v));
                     // apply zShift
-                    if(config_.zShift) {
+                    if (config_.zShift) {
                         projected.back()(2) += config_.zShift;
                     }
                     ++ivalid;
@@ -1116,9 +1091,6 @@ void cutTiles(const std::vector<vef::Archive> &input
         Cutter(tmpset, archive, rf, config, progress
                , *iassignments++);
     }
-
-    tmpset.flush();
-    ntg.save(tmpset.root() / "navtile.info");
 }
 
 /**
@@ -1132,7 +1104,7 @@ void cutTiles(const std::vector<vef::Archive> &input
 const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
 
-class Encoder : public vts::Encoder {
+class Encoder : public tools::TmpTsEncoder {
 public:
     /** Regular version.
      */
@@ -1140,143 +1112,27 @@ public:
             , const vts::TileSetProperties &properties
             , vts::CreateMode mode
             , const std::vector<vef::Archive> &input
-            , const Config &config
+            , const ::Config &config
             , vt::ExternalProgress::Config &&epConfig)
-        : vts::Encoder(path, properties, mode)
+        : tools::TmpTsEncoder(path, properties, mode
+                              , config, std::move(epConfig)
+                              , (config.resume ? weightsResume : weightsFull))
         , config_(config)
-        , progress_(std::move(epConfig), weightsFull)
-        , tmpset_(path / "tmp")
-        , ntg_(&referenceFrame())
     {
-        tmpset_.keep(config.keepTmpset);
+        if (config.resume) { return; }
+        if (input.empty()) {
+            LOGTHROW(err1, std::runtime_error)
+                << "No archive passed while not resuming.";
+        }
 
         // cut tiles to temporary
-        cutTiles(input, tmpset_, referenceFrame(), config_, ntg_
-                 , progress_);
-
-        prepare();
-    }
-
-    /** Resume version.
-     */
-    Encoder(const boost::filesystem::path &path
-            , const vts::TileSetProperties &properties
-            , vts::CreateMode mode
-            , const Config &config
-            , vt::ExternalProgress::Config &&epConfig)
-        : vts::Encoder(path, properties, mode)
-        , config_(config)
-        , progress_(std::move(epConfig), weightsResume)
-        , tmpset_(path / "tmp", false)
-        , ntg_(&referenceFrame(), tmpset_.root() / "navtile.info")
-    {
-        tmpset_.keep(config.keepTmpset);
-        prepare();
-    }
-
-    ~Encoder() {
-        progress_.done();
+        cutTiles(input, tmpset(), referenceFrame(), config_, ntg()
+                 , progress());
     }
 
 private:
-    void prepare() {
-        validTree_ = index_ = tmpset_.tileIndex();
-
-        // make valid tree complete from root
-        validTree_.makeAbsolute().complete();
-
-        setConstraints(Constraints().setValidTree(&validTree_));
-        const auto count(index_.count());
-        setEstimatedTileCount(count);
-        progress_.expect(count);
-    }
-
-    virtual TileResult
-    generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
-             , const TileResult&)
-        UTILITY_OVERRIDE;
-
-    virtual void finish(vts::TileSet &ts);
-
-    const Config config_;
-
-    vt::ExternalProgress progress_;
-
-    tools::TmpTileset tmpset_;
-    vts::TileIndex index_;
-    vts::TileIndex validTree_;
-
-    vts::NtGenerator ntg_;
+    const ::Config config_;
 };
-
-inline void warpInPlace(const vts::CsConvertor &conv, vts::SubMesh &sm)
-{
-    for (auto &v : sm.vertices) { v = conv(v); }
-}
-
-inline void warpInPlace(const vts::CsConvertor &conv, vts::Mesh &mesh)
-{
-    for (auto &sm : mesh) { warpInPlace(conv, sm); }
-}
-
-
-Encoder::TileResult
-Encoder::generate(const vts::TileId &tileId, const vts::NodeInfo &nodeInfo
-                  , const TileResult&)
-{
-    if (!index_.get(tileId)) { return TileResult::Result::noDataYet; }
-
-    // dst SDS -> dst physical
-    const vts::CsConvertor sds2DstPhy
-        (nodeInfo.srs(), referenceFrame().model.physicalSrs);
-
-    TileResult result(TileResult::Result::tile);
-
-    // create tile
-    auto &tile(result.tile());
-    {
-        // load tile
-        const auto loaded(tmpset_.load(tileId, config_.textureQuality));
-
-        // merge submeshes
-        std::tie(tile.mesh, tile.atlas)
-            = vts::mergeSubmeshes
-            (tileId, std::get<0>(loaded), std::get<1>(loaded)
-             , config_.textureQuality);
-
-        // mesh in SDS -> pre-compute geom extents
-        tile.geomExtents = geomExtents(*tile.mesh);
-    }
-
-    // generate external texture coordinates
-    vts::generateEtc(*tile.mesh, nodeInfo.extents()
-                     , nodeInfo.node().externalTexture);
-
-    if (!config_.forceWatertight) {
-        // generate mesh mask if not asked to make all tiles watertight
-        vts::generateCoverage(*tile.mesh, nodeInfo.extents());
-    }
-
-    // add tile to navtile generator
-    ntg_.addTile(tileId, nodeInfo, *tile.mesh);
-
-    // warp mesh to physical SRS
-    warpInPlace(sds2DstPhy, *tile.mesh);
-
-    // set credits
-    tile.credits = config_.credits;
-
-    // done
-    ++progress_;
-
-    // done
-    return result;
-}
-
-void Encoder::finish(vts::TileSet &ts)
-{
-    ntg_.generate(ts, config_.dtmExtractionRadius, progress_);
-}
 
 int Vef2Vts::run()
 {
@@ -1284,25 +1140,18 @@ int Vef2Vts::run()
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
 
-    if (config_.resume) {
-        // run the encoder
-        Encoder(output_, properties, createMode_, config_
-                , std::move(epConfig_)).run();
-
-        // all done
-        LOG(info4) << "All done.";
-        return EXIT_SUCCESS;
-    }
-
-    // load input manifests
     std::vector<vef::Archive> input;
-    for (const auto &path : input_) {
-        input.emplace_back(path);
-        if (!input.back().manifest().srs) {
-            LOG(fatal)
-                << "VEF archive " << path
-                << " doesn't have assigned an SRS, cannot proceed.";
-            return EXIT_FAILURE;
+
+    if (!config_.resume) {
+        // load input manifests
+        for (const auto &path : input_) {
+            input.emplace_back(path);
+            if (!input.back().manifest().srs) {
+                LOG(fatal)
+                    << "VEF archive " << path
+                    << " doesn't have assigned an SRS, cannot proceed.";
+                return EXIT_FAILURE;
+            }
         }
     }
 

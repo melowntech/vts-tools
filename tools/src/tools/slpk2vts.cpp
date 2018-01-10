@@ -78,7 +78,6 @@ struct Config : tools::TmpTsEncoder::Config {
     boost::optional<vts::LodTileRange> tileExtents;
     double clipMargin;
     double borderClipMargin;
-    double sigmaEditCoef;
     double zShift;
 
     Config()
@@ -86,7 +85,6 @@ struct Config : tools::TmpTsEncoder::Config {
         , ntLodPixelSize(1.0)
         , clipMargin(1.0 / 128.)
         , borderClipMargin(clipMargin)
-        , sigmaEditCoef(1.5)
         , zShift(0.0)
     {}
 
@@ -126,12 +124,6 @@ struct Config : tools::TmpTsEncoder::Config {
              ->default_value(optimalTextureSize)->required()
              , "Size of ideal tile texture. Used to calculate fitting LOD from"
              "mesh texel size. Do not modify.")
-
-            ("tweak.sigmaEditCoef", po::value(&sigmaEditCoef)
-             ->default_value(sigmaEditCoef)
-             , "Sigma editting coefficient. Meshes with best LOD difference "
-             "from mean best LOD lower than sigmaEditCoef * sigma are "
-             "assigned round(mean best LOD).")
 
             ("zShift", po::value(&zShift)
              ->default_value(zShift)->required()
@@ -185,9 +177,6 @@ void Slpk2Vts::configuration(po::options_description &cmdline
                              , po::options_description &config
                              , po::positional_options_description &pd)
 {
-    vr::registryConfiguration(cmdline, vr::defaultPath());
-    vr::creditsConfiguration(cmdline);
-
     config_.configuration(cmdline);
 
     cmdline.add_options()
@@ -209,8 +198,6 @@ void Slpk2Vts::configuration(po::options_description &cmdline
 
 void Slpk2Vts::configure(const po::variables_map &vars)
 {
-    vr::registryConfigure(vars);
-
     config_.configure(vars);
 
     createMode_ = (vars.count("overwrite")
