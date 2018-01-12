@@ -1,3 +1,10 @@
+vts-tools (1.63) stable; urgency=low
+
+  * LODtree uses tmp tileset.
+  * Unique tmp files when saving storage configuration.
+
+ -- Ladislav Horky <ladislav.horky@citationtech.net>  Tue, 09 Jan 2018 16:10:01 +0100
+
 vts-tools (1.62) stable; urgency=low
 
   * Fixed reading of ZIP archives with data-descriptors.
