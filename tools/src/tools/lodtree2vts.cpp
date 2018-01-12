@@ -221,46 +221,6 @@ usage
 
 // ------------------------------------------------------------------------
 
-tools::MeshInfo measureMesh(const vts::NodeInfo &rfNode
-                            , const vts::CsConvertor conv
-                            , const vts::Mesh &mesh
-                            , const std::vector<math::Size2> &sizes)
-{
-    tools::MeshInfo mi;
-
-    auto isizes(sizes.begin());
-    for (const auto &sm : mesh) {
-        const auto &size(*isizes++);
-
-        // make all faces valid by default
-        vts::VertexMask valid(sm.vertices.size(), true);
-        math::Points3 projected;
-        projected.reserve(sm.vertices.size());
-
-        auto ivalid(valid.begin());
-        for (const auto &v : sm.vertices) {
-            try {
-                projected.push_back(conv(v));
-                ++ivalid;
-            } catch (const std::exception&) {
-                // failed to convert vertex, mask it and skip
-                projected.emplace_back();
-                *ivalid++ = false;
-            }
-        }
-
-        // clip mesh to node's extents
-        // FIXME: implement mask application in clipping!
-        auto osm(vts::clip(sm, projected, rfNode.extents(), valid));
-        if (osm.faces.empty()) { continue; }
-
-        // at least one face survived remember
-        mi.update(osm, size);
-    }
-
-    return mi;
-}
-
 tools::LodInfo analyze(vt::ExternalProgress &progress
                        , const Config &config
                        , const vts::NodeInfo::list &nodes
@@ -338,7 +298,7 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
         // compute mesh are in each RF node
         for (const auto &rfNode : nodes) {
             const vts::CsConvertor conv(inputSrs, rfNode.srs());
-            const auto mi(measureMesh(rfNode, conv, mesh, sizes));
+            const auto mi(tools::measureMesh(rfNode, conv, mesh, sizes));
             if (mi) {
                 UTILITY_OMP(critical(lodtree2vts_meshInfo_1))
                     (*pmim)[&rfNode] += mi;
@@ -356,8 +316,11 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
         const auto &lod(lodInfo.localLods[item.first]
                         = tools::LodParams(item.second.extents
                                            , std::round(bl)));
-        LOG(info2) << "Assigned LOD " << lod << " for bottom in subtree <"
-                   << item.first->srs() << ">.";
+        LOG(info3)
+            << "Assigned LOD " << (item.first->nodeId().lod + lod)
+            << " (local LOD " << lod
+            << ") for bottom depth (" << lodInfo.bottomDepth
+            << ") in subtree " << item.first->srs() << ".";
     }
 
     return lodInfo;
@@ -479,6 +442,9 @@ void Cutter::cutNode(const lodtree::Node &node, const tools::LodInfo &lodInfo)
             continue;
         }
 
+        const vts::Lod localLod(bottomLod - fromBottom);
+        const auto lod(localLod + rfNode.nodeId().lod);
+
         /** (extra) Tile flags to be stored along generate tiles from this node
          */
         vts::TileIndex::Flag::value_type tileFlags(0);
@@ -491,9 +457,6 @@ void Cutter::cutNode(const lodtree::Node &node, const tools::LodInfo &lodInfo)
                 tileFlags |= vts::TileIndex::Flag::alien;
             }
         }
-
-        const vts::Lod localLod(bottomLod - fromBottom);
-        const auto lod(localLod + rfNode.nodeId().lod);
 
         // projested mesh/atlas
         vts::Mesh mesh;
