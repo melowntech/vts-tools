@@ -1,3 +1,9 @@
+vts-tools (1.64) stable; urgency=low
+
+  * Fixed TmpTsEncoder-based encoders (i.e. all *2vts).
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Mon, 15 Jan 2018 10:29:18 +0100
+
 vts-tools (1.63) stable; urgency=low
 
   * LODtree uses tmp tileset.
