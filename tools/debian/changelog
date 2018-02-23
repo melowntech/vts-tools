@@ -1,3 +1,9 @@
+vts-tools (1.66) stable; urgency=low
+
+  * ZIP with safety padding.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Fri, 23 Feb 2018 15:23:40 +0100
+
 vts-tools (1.65) stable; urgency=low
 
   * Added version tagging in tileset selection when generating storage map config.
