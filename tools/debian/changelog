@@ -1,3 +1,9 @@
+vts-tools (1.67) stable; urgency=low
+
+  * navtile generator: surrogates use proper srs SRS (with vertical adjustment)
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Tue, 27 Feb 2018 16:15:29 +0100
+
 vts-tools (1.66) stable; urgency=low
 
   * ZIP with safety padding.
