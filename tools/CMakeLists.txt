@@ -13,14 +13,14 @@ find_package(Boost 1.46 REQUIRED
 link_directories(${Boost_LIBRARY_DIRS})
 include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
 
-find_package(OpenCV 2.4 REQUIRED)
+find_package(OpenCV REQUIRED)
 
 find_package(GDAL REQUIRED)
 include_directories(SYSTEM ${GDAL_INCLUDE_DIR})
 find_package(Proj REQUIRED)
 include_directories(${PROJ_INCLUDE_DIR})
 find_package(GeographicLib REQUIRED)
-include_directories(${GEOGRAPHICLIB_INCLUDE_DIR})
+include_directories(${GeographicLib_INCLUDE_DIR})
 
 find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
