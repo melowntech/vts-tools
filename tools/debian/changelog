@@ -1,3 +1,11 @@
+vts-tools (1.68) stable; urgency=medium
+
+  * Using latest dependencies.
+  * Compilable on Ubuntu Bionic/Beaver (gcc 7, opencv-3, gdal-2.2).
+  * Fixed mesh contour clipping in tile merge in glue generation.
+
+ -- Vaclav Blazek <vaclav.blazek@citationtech.net>  Thu, 19 Apr 2018 11:25:34 +0200
+
 vts-tools (1.67) stable; urgency=low
 
   * navtile generator: surrogates use proper srs SRS (with vertical adjustment)
