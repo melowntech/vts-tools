@@ -1,3 +1,9 @@
+vts-tools (1.70) stable; urgency=medium
+
+  * Supporting bodies in mapconfig.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 21 Jun 2018 16:20:32 +0200
+
 vts-tools (1.69) stable; urgency=medium
 
   * Fixed merge problem on OpenCV 3.2 (Ubuntu/Bionic).
