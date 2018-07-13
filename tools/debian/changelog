@@ -1,3 +1,9 @@
+vts-tools (1.71) stable; urgency=medium
+
+  * Proper handling of tileset.registry in tileset cloning.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 13 Jul 2018 15:26:46 +0200
+
 vts-tools (1.70) stable; urgency=medium
 
   * Supporting bodies in mapconfig.
