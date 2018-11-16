@@ -350,6 +350,33 @@ inline std::string asString(const NodeId &nodeId) {
     return boost::lexical_cast<std::string>(nodeId);
 }
 
+void updateMbs(slpk::Node &parent, slpk::Node &child)
+{
+    auto &dst(parent.mbs);
+    auto &src(child.mbs);
+
+    if (!dst.r) {
+        dst = src;
+        return;
+    }
+
+    const auto cDist(norm_2(dst.center - src.center));
+    // dst inside src: replace dst with src
+    if ((cDist + dst.r) < src.r) {
+        dst = src;
+        return;
+    }
+
+    // src inside dst, keep
+    if ((cDist + src.r) < dst.r) { return; }
+
+    double r((dst.r + src.r + cDist) / 2.0);
+    math::Point3 c(dst.center + (src.center - dst.center)
+                   * (r - dst.r) / cDist);
+    dst.r = r;
+    dst.center = c;
+}
+
 class NodeHolder {
 public:
     typedef std::shared_ptr<NodeHolder> pointer;
@@ -359,37 +386,53 @@ public:
     slpk::Node node;
     slpk::SharedResource sharedResource;
 
-    NodeHolder(slpk::Writer &writer, const NodeId &nodeId)
-        : writer_(writer), expected_(4)
+    NodeHolder(const NodeId &nodeId)
     {
         node.id = asString(nodeId);
     }
 
     void child(const NodeHolder::pointer &child) {
-        const auto last(!--expected_);
+        if (child) { children_.push_back(child); }
+    }
 
-        if (child) {
-            node.children.push_back(child->reference);
-            children_.push_back(child);
+    void finish(NodeHolder *parent, const Setup &setup)
+    {
+        // finish children first
+        for (auto &child : children_) { child->finish(this, setup); }
 
-            for (auto &other : children_) {
-                other->node.neighbors.push_back(child->reference);
-                child->node.neighbors.push_back(other->reference);
-            }
+        // update parents MBS
+        if (parent) { updateMbs(parent->node, node); }
+
+        // convert MBS to dst SRS and write through to reference
+        if (node.mbs.r) {
+            // convert mbs to dst SRS
+            node.mbs.center = setup.work2dst(node.mbs.center);
+            reference.mbs = node.mbs;
         }
 
-        if (!last) { return; }
-
-        if (node.geometryData.empty()) {
-            writer_.write(node);
-        } else {
-            writer_.write(node, &sharedResource);
+        // cross-reference children (N^2)
+        for (auto &child : children_) {
+            for (auto &other : children_) {
+                if (child != other) {
+                    child->node.neighbors.push_back(other->reference);
+                }
+            }
+            child->node.parentNode = reference;
+            node.children.push_back(child->reference);
         }
     }
 
+    void write(slpk::Writer &writer) {
+        if (node.geometryData.empty()) {
+            writer.write(node);
+        } else {
+            writer.write(node, &sharedResource);
+        }
+
+        for (auto &child : children_) { child->write(writer); }
+    }
+
 private:
-    slpk::Writer &writer_;
-    int expected_;
     list children_;
 };
 
@@ -494,6 +537,7 @@ public:
         : writer_(writer), ts_(ts), config_(config), setup_(setup)
         , ti_(ts.tileIndex()), fullTree_(ti_)
         , sceneExtents_(math::InvalidExtents{})
+        , generated_(), total_(ti_.count())
     {
         fullTree_.makeAbsolute().complete();
     }
@@ -501,8 +545,7 @@ public:
     void operator()(/**vt::ExternalProgress &progress*/);
 
 private:
-    NodeHolder::pointer process(const vts::TileId &tileId, NodeId nodeId
-                                , NodeHolder::pointer parent);
+    NodeHolder::pointer process(const vts::TileId &tileId, NodeId nodeId);
 
     slpk::Writer &writer_;
 
@@ -514,6 +557,9 @@ private:
     vts::TileIndex fullTree_;
 
     math::Extents2 sceneExtents_;
+
+    std::atomic<std::size_t> generated_;
+    std::size_t total_;
 };
 
 struct MeshVertices {
@@ -623,9 +669,33 @@ math::Extents2 measureMesh(const vts::Mesh &mesh)
     return extents;
 }
 
+
+struct Done {
+    Done(std::size_t count, std::size_t total)
+        : count(count), total(total)
+    {}
+
+    std::size_t count;
+    std::size_t total;
+};
+
+template<typename CharT, typename Traits>
+inline std::basic_ostream<CharT, Traits>&
+operator<<(std::basic_ostream<CharT, Traits> &os, const Done &d)
+{
+    if (d.total) {
+        double percentage((100.0 * d.count) / d.total);
+        boost::io::ios_precision_saver ps(os);
+        return os << '#' << d.count << " of " << d.total << " ("
+                  << std::fixed << std::setprecision(2)
+                  << std::setw(6) << percentage
+                  << " % done)";
+    }
+    return os << '#' << d.count;
+}
+
 NodeHolder::pointer
-Generator::process(const vts::TileId &tileId, NodeId nodeId
-                   , NodeHolder::pointer parent)
+Generator::process(const vts::TileId &tileId, NodeId nodeId)
 {
     struct TIDGuard {
         TIDGuard(const std::string &id)
@@ -642,11 +712,11 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
 
     TIDGuard tg(str(boost::format("tile:%s") % tileId));
 
-    auto node(std::make_shared<NodeHolder>(writer_, nodeId));
+    auto node(std::make_shared<NodeHolder>(nodeId));
     auto &nodeReference(node->reference);
 
     if (ti_.get(tileId)) {
-        LOG(info3)
+        LOG(info2)
             << "Generating node <" << nodeId << "> from tile " << tileId
             << ".";
 
@@ -661,7 +731,6 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         }
 
         n.level = nodeId.level();
-        if (parent) { n.parentNode = parent->reference; }
 
         // TODO: build node version
 
@@ -688,12 +757,9 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
         // measure mesh
         {
             auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
-            mbs.center = setup_.work2dst(mbs.center);
-
             n.mbs.center = mbs.center;
             n.mbs.r = mbs.radius;
         }
-        nodeReference.mbs = n.mbs;
 
         // convert mesh vertices to output SRS
         warpInPlace(*mesh, setup_.work2dst);
@@ -711,6 +777,11 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
 
         // write mesh and atlas
         write(writer_, n, sr, *mesh, *atlas);
+
+        Done done(++generated_, total_);
+        LOG(info3)
+            << "Generated node " << done << " <" << nodeId
+            << "> from tile " << tileId << ".";
     } else {
         // non-geometry node, fill in
         nodeReference.id = asString(nodeId);
@@ -722,7 +793,7 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
     for (auto child : vts::children(tileId)) {
         UTILITY_OMP(task)
         {
-            auto childNode(process(child, nodeId.child(childIndex), node));
+            auto childNode(process(child, nodeId.child(childIndex)));
 
             UTILITY_OMP(critical(vef2slpk_process_1))
                 node->child(childNode);
@@ -736,10 +807,17 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId
 
 void Generator::operator()(/**vt::ExternalProgress &progress*/)
 {
-    UTILITY_OMP(parallel)
-    UTILITY_OMP(single)
     {
-        process({}, {}, {});
+        NodeHolder::pointer root;
+
+        UTILITY_OMP(parallel shared(root))
+            UTILITY_OMP(single)
+            {
+                root = process({}, {});
+            }
+
+        root->finish({}, setup_);
+        root->write(writer_);
     }
 
     // finish archive
@@ -757,18 +835,6 @@ int Vef2Slpk::run()
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
     tools::TmpTileset ts(tmpTilesetPath, !config_.resume);
     ts.keep(config_.keepTmpset);
-
-    if (config_.resume) {
-#if 0
-        // TODO: implement me
-
-        // all done
-        LOG(info4) << "All done.";
-        return EXIT_SUCCESS;
-#endif
-        LOG(fatal) << "Resume not implemented yet.";
-        return EXIT_FAILURE;
-    }
 
     // load input manifests
     vef::Archive input(input_);
