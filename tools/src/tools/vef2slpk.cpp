@@ -54,6 +54,7 @@
 #include "utility/binaryio.hpp"
 #include "utility/path.hpp"
 #include "utility/stl-helpers.hpp"
+#include "utility/config.hpp"
 
 #include "service/cmdline.hpp"
 #include "service/verbosity.hpp"
@@ -76,6 +77,8 @@
 #include "vts-libs/tools-support/progress.hpp"
 
 #include "vef/reader.hpp"
+#include "vef/tiling.hpp"
+#include "vef/tilecutter.hpp"
 #include "slpk/writer.hpp"
 #include "miniball/miniball.hpp"
 
@@ -228,30 +231,12 @@ bool Vef2Slpk::help(std::ostream &out, const std::string &what) const
     if (what.empty()) {
         out << R"RAW(vef2vts
 usage
-    vef2vts OUTPUT INPUT+ [OPTIONS]
+    vef2vts INPUT OUTPUT [OPTIONS]
 
 )RAW";
     }
     return false;
 }
-
-struct MeshInfo {
-    vts::MeshArea area;
-    math::Extents2 extents;
-    std::size_t faceCount;
-
-    MeshInfo()
-       : extents(math::InvalidExtents{}), faceCount()
-    {}
-
-    void update(const MeshInfo &mi) {
-        area.mesh += mi.area.mesh;
-        area.submeshes.insert(area.submeshes.end(), mi.area.submeshes.begin()
-                              , mi.area.submeshes.end());
-        math::update(extents, mi.extents);
-        faceCount += mi.faceCount;
-    }
-};
 
 struct Setup {
     math::Extents2 workExtents;
@@ -260,421 +245,82 @@ struct Setup {
     geo::SrsDefinition dstSrs;
     geo::CsConvertor src2work;
     geo::CsConvertor work2dst;
-    vts::MeshArea meshArea;
-    std::size_t faceCount;
-    std::size_t depth;
     vts::Lod maxLod;
 
-    Setup() : faceCount(), depth(), maxLod() {}
+    Setup() : maxLod() {}
+
+    void save(std::ostream &os) const;
+
+    void configuration(const std::string&, po::options_description &od);
+    void configure(const std::string&, po::variables_map) {}
 };
 
-/** Makes extents prettier:
- *
- *   * center placed at integral coordinates
- *   * integral dimensions
- *   * square footprint
- */
-math::Extents2 prettifyExtents(const math::Extents2 &extents)
+void Setup::save(std::ostream &os) const
 {
-    // measure extents
-    auto size(math::size(extents));
-    auto center(math::center(extents));
-    center(0) = std::round(center(0));
-    center(1) = std::round(center(0));
-
-    auto dim(std::max
-             (std::ceil(size.width / 2.0) + 1.0
-              , std::ceil(size.height / 2.0) + 1.0));
-
-    return { center(0) - dim, center(1) - dim
-            , center(0) + dim, center(1) + dim };
+    os << std::fixed << std::setprecision(15)
+       << "workExtents = " << workExtents
+       << "\nsrcSrs = " << srcSrs
+       << "\nworkSrs = " << workSrs
+       << "\ndstSrs = " << dstSrs
+       << "\nmaxLod = " << maxLod
+       << "\n"
+        ;
 }
 
-/** Measures whole mesh extents from coarsest data.
- */
-math::Extents3 meshExtents(const vef::Archive &archive)
+void Setup::configuration(const std::string&, po::options_description &od)
 {
-    struct ExtentsMeasurer : public geometry::ObjParserBase {
-        ExtentsMeasurer() : extents(math::InvalidExtents{}) {}
-
-        virtual void addVertex(const Vector3d &v) {
-            math::update(extents, math::Point3d(v));
-        }
-
-        virtual void addTexture(const Vector3d&) {}
-        virtual void addNormal(const Vector3d&) {}
-        virtual void addFacet(const Facet&) {}
-        virtual void materialLibrary(const std::string&) {}
-        virtual void useMaterial(const std::string&) {}
-
-        math::Extents3 extents;
-    };
-
-    ExtentsMeasurer em;
-
-    for (const auto &lw : archive.manifest().windows) {
-        const auto &window(lw.lods.back());
-        if (!em.parse(*archive.meshIStream(window.mesh))) {
-            LOGTHROW(err2, std::runtime_error)
-                << "Unable to load mesh from OBJ file at "
-                << window.mesh.path << ".";
-        }
-    }
-
-    return em.extents;
+    od.add_options()
+        ("workExtents", po::value(&workExtents), "workExtents")
+        ("srcSrs", po::value(&srcSrs), "srcSrs")
+        ("workSrs", po::value(&workSrs), "workSrs")
+        ("dstSrs", po::value(&dstSrs), "dstSrs")
+        ("maxLod", po::value(&maxLod), "maxLod")
+        ;
 }
 
-MeshInfo measureMesh(const vef::Archive &archive, const vef::Mesh &mesh
-                     , const geo::CsConvertor &conv)
+void writeSetup(const fs::path &file, const Setup &setup)
 {
-    LOG(info2) << "Loading mesh from " << mesh.path << ".";
+    LOG(info2) << "Saving setup to " << file;
 
-    MeshInfo mi;
+    const auto tmp(utility::addExtension(file, ".tmp"));
 
-    auto m(vts::loadMeshFromObj(*archive.meshIStream(mesh), mesh.path));
-    for (auto &sm : m.submeshes) {
-        for (auto &v : sm.vertices) {
-            v = conv(v);
-            math::update(mi.extents, v(0), v(1));
-        }
-        mi.faceCount += sm.faces.size();
-    }
+    std::ofstream f;
+    f.exceptions(std::ios::badbit | std::ios::failbit);
+    f.open(tmp.native(), std::ios_base::out | std::ios_base::trunc);
 
-    mi.area = vts::area(m);
-
-    return mi;
-}
-
-MeshInfo measureMeshes(const vef::Archive &archive
-                       , const geo::CsConvertor &conv)
-{
-    MeshInfo mi;
-
-    const auto &windows(archive.manifest().windows);
-
-    UTILITY_OMP(parallel for)
-    for (std::size_t i = 0; i < windows.size(); ++i) {
-        const auto &window(windows[i].lods.front());
-
-        auto a(measureMesh(archive, window.mesh, conv));
-
-        // expand texture area
-        auto iatlas(window.atlas.begin());
-        for (auto &sm : a.area.submeshes) {
-            // expand by texture size
-            const auto &size((*iatlas++).size);
-            sm.internalTexture *= size.width;
-            sm.internalTexture *= size.height;
-        }
-
-        UTILITY_OMP(critical(vef2slpk_measureMeshes_1))
-            mi.update(a);
-    }
-    return mi;
-}
-
-Setup toEnu(const Config &config, const vef::Archive &archive)
-{
-    Setup setup;
-    setup.srcSrs = *archive.manifest().srs;
-    setup.dstSrs = config.spatialReference.srs();
-
-    if (setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
-        // find, it's ENU -> measure mesh in src/work SRS
-        auto mi(measureMeshes(archive, geo::CsConvertor()));
-
-        setup.workExtents = mi.extents;
-        setup.workSrs = setup.srcSrs;
-        setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
-        setup.meshArea = mi.area;
-        setup.faceCount = mi.faceCount;
-
-        return setup;
-    }
-
-    // not ENU, build one
-
-    // get center of mesh in its source SRS
-    const auto center(math::center(meshExtents(archive)));
-
-    // build ENU
-    // TODO: extract spheroid and towgs84 from setup.srsSrs
-    geo::Enu enu(geo::CsConvertor(setup.srcSrs, setup.srcSrs.geographic())
-                 (center));
-
-    setup.workSrs = geo::SrsDefinition::fromEnu(enu);
-    setup.src2work = geo::CsConvertor(setup.srcSrs, enu);
-    setup.work2dst = geo::CsConvertor(enu, setup.dstSrs);
-
-    // measure mesh in work SRS
-    auto mi(measureMeshes(archive, setup.src2work));
-
-    setup.workExtents = mi.extents;
-    setup.meshArea = mi.area;
-    setup.faceCount = mi.faceCount;
-
-    return setup;
-}
-
-double pixelArea(const vts::MeshArea &area) {
-    double ta(0);
-    for (const auto &sm : area.submeshes) {
-        ta += sm.internalTexture;
-    }
-    return area.mesh / ta;
+    setup.save(f);
+    f.close();
+    fs::rename(tmp, file);
 }
 
 Setup makeSetup(const Config &config, const vef::Archive &archive)
 {
-    auto setup(toEnu(config, archive));
-    setup.workExtents = prettifyExtents(setup.workExtents);
+    vef::Tiling tiling(archive, config.optimalTextureSize);
 
-    for (const auto &lw : archive.manifest().windows) {
-        setup.depth = std::max(setup.depth, lw.lods.size());
+    Setup setup;
+    setup.srcSrs = tiling.srcSrs;
+    setup.workExtents = tiling.workExtents;
+    setup.workSrs = tiling.workSrs;
+    setup.maxLod = tiling.maxLod;
+    setup.dstSrs = config.spatialReference.srs();
+
+    if (!setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
+        setup.src2work = geo::CsConvertor(setup.srcSrs, setup.workSrs);
     }
-
-    // compute area of one pixel (meter^2/pixel)
-    auto px(pixelArea(setup.meshArea));
-
-    // optimal tile size in meters^2
-    auto tileArea(px
-                  * config.optimalTextureSize.width
-                  * config.optimalTextureSize.height);
-
-    // we made work extents square -> we can use scene area as is
-    const auto sceneSize(math::size(setup.workExtents));
-    const auto paneArea(math::area(sceneSize));
-
-    const auto tileCount(paneArea / tileArea);
-
-    const auto optimalLod(0.5 * std::log2(tileCount));
-
-    setup.maxLod = std::round(optimalLod);
-
-    if (setup.depth > (setup.maxLod + 1U)) {
-        setup.maxLod = setup.depth - 1;
-    }
-
+    setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
     return setup;
 }
 
-/** Per-window record to ease parallel processing.
- */
-struct WindowRecord {
-    const vef::Window *window;
-    vts::Lod lod;
-
-    WindowRecord(const vef::Window &window, vts::Lod lod)
-        : window(&window), lod(lod)
-    {}
-
-    typedef std::vector<WindowRecord> list;
-};
-
-WindowRecord::list windowRecordList(const vef::Archive &archive
-                                    , vts::Lod maxLod)
+Setup readSetup(const fs::path &file)
 {
-    WindowRecord::list list;
+    Setup setup;
+    utility::readConfig(file, setup);
 
-    for (const auto &lw : archive.manifest().windows) {
-        auto lod(maxLod);
-        for (const auto &w : lw.lods) {
-            list.emplace_back(w, lod--);
-        }
+    if (!setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
+        setup.src2work = geo::CsConvertor(setup.srcSrs, setup.workSrs);
     }
-
-    return list;
-}
-
-inline void warpInPlace(vts::SubMesh &mesh, const geo::CsConvertor &conv)
-{
-    for (auto &v : mesh.vertices) { v = conv(v); }
-}
-
-inline void warpInPlace(vts::Mesh &mesh, const geo::CsConvertor &conv)
-{
-    for (auto &sm : mesh) { warpInPlace(sm, conv); }
-}
-
-math::Extents2 measureMesh(const vts::Mesh &mesh)
-{
-    math::Extents2 extents(math::InvalidExtents{});
-    for (const auto &sm : mesh) {
-        for (const auto &v : sm.vertices) {
-            math::update(extents, v(0), v(1));
-        }
-    }
-    return extents;
-}
-
-class Cutter {
-public:
-    Cutter(tools::TmpTileset &ts, const vef::Archive &archive
-           , const Config &config, const Setup &setup)
-        : ts_(ts), archive_(archive)
-        , config_(config), setup_(setup)
-        , windows_(windowRecordList(archive_, setup.maxLod))
-    {}
-
-    void operator()(/**vt::ExternalProgress &progress*/);
-
-private:
-    void windowCut(const WindowRecord &window);
-
-    void splitToTiles(vts::Lod lod, const vts::TileRange &tr
-                      , const vts::Mesh &mesh
-                      , const vts::opencv::Atlas &atlas);
-
-    void tileCut(const vts::TileId &tileId, const vts::Mesh &mesh
-                 , const vts::opencv::Atlas &atlas);
-
-    cv::Mat loadTexture(const fs::path &path) const;
-
-    tools::TmpTileset &ts_;
-    const vef::Archive &archive_;
-    const Config &config_;
-    const Setup &setup_;
-
-    WindowRecord::list windows_;
-};
-
-void Cutter::operator()(/**vt::ExternalProgress &progress*/)
-{
-    UTILITY_OMP(parallel for)
-        for (std::size_t i = 0; i < windows_.size(); ++i) {
-            windowCut(windows_[i]);
-        }
-
-    ts_.flush();
-}
-
-cv::Mat Cutter::loadTexture(const fs::path &path) const
-{
-    const auto &archive(archive_.archive());
-    if (archive.directio()) {
-        // optimized access
-        auto tex(cv::imread(archive.path(path).string()));
-        if (!tex.data) {
-            LOGTHROW(err2, std::runtime_error)
-                << "Unable to load texture from " << path << ".";
-        }
-    }
-
-    auto is(archive.istream(path));
-    auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
-
-    if (!tex.data) {
-        LOGTHROW(err2, std::runtime_error)
-            << "Unable to load texture from " << is->path() << ".";
-    }
-
-    return tex;
-}
-
-math::Extents2 computeExtents(const vts::Mesh &mesh)
-{
-    math::Extents2 extents(math::InvalidExtents{});
-    for (const auto &sm : mesh) {
-        for (const auto &p : sm.vertices) {
-            update(extents, p(0), p(1));
-        }
-    }
-    return extents;
-}
-
-vts::TileRange computeTileRange(const Setup &setup, vts::Lod lod
-                                , const math::Extents2 &meshExtents)
-{
-    vts::TileRange r(math::InvalidExtents{});
-    const auto ts(vts::tileSize(setup.workExtents, lod));
-    const auto origin(math::ul(setup.workExtents));
-
-    for (const auto &p : vertices(meshExtents)) {
-        update(r, vts::TileRange::point_type
-               ((p(0) - origin(0)) / ts.width
-                , (origin(1) - p(1)) / ts.height));
-    }
-
-    return r;
-}
-
-void Cutter::windowCut(const WindowRecord &wr)
-{
-    const auto &window(*wr.window);
-    const auto &wm(window.mesh);
-    LOG(info2) << "Cutting window mesh from " << wm.path << ".";
-    auto mesh(vts::loadMeshFromObj(*archive_.meshIStream(wm), wm.path));
-    warpInPlace(mesh, setup_.src2work);
-
-    if (mesh.submeshes.size() != window.atlas.size()) {
-        LOGTHROW(err2, std::runtime_error)
-            << "Texture/submesh count mismatch in window "
-            << window.path << ".";
-    }
-
-    vts::opencv::Atlas atlas;
-    for (const auto &texture : window.atlas) {
-        LOG(info3) << "Loading window texture from: " << texture.path;
-        atlas.add(loadTexture(texture.path));
-    }
-
-    auto tr(computeTileRange(setup_, wr.lod, computeExtents(mesh)));
-    LOG(info3) << "Splitting window " << window.path
-               << " to tiles in " << wr.lod << "/" << tr << ".";
-    splitToTiles(wr.lod, tr, mesh, atlas);
-}
-
-void Cutter::splitToTiles(vts::Lod lod, const vts::TileRange &tr
-                          , const vts::Mesh &mesh
-                          , const vts::opencv::Atlas &atlas)
-{
-    for (auto j(tr.ll(1)), je(tr.ur(1)); j <= je; ++j) {
-        for (auto i(tr.ll(0)), ie(tr.ur(0)); i <= ie; ++i) {
-            tileCut(vts::TileId(lod, i, j), mesh, atlas);
-        }
-    }
-}
-
-math::Extents2 tileExtents(const math::Extents2 &rootExtents
-                           , const vts::TileId &tileId)
-{
-    auto tc(vts::tileCount(tileId.lod));
-    auto rs(size(rootExtents));
-    math::Size2f ts(rs.width / tc, rs.height / tc);
-
-    return math::Extents2
-        (rootExtents.ll(0) + tileId.x * ts.width
-         , rootExtents.ur(1) - (tileId.y + 1) * ts.height
-         , rootExtents.ll(0) + (tileId.x + 1) * ts.width
-         , rootExtents.ur(1) - tileId.y * ts.height);
-}
-
-void Cutter::tileCut(const vts::TileId &tileId, const vts::Mesh &mesh
-                     , const vts::opencv::Atlas &atlas)
-{
-    auto extents
-        (vts::inflateTileExtents
-         (tileExtents(setup_.workExtents, tileId), config_.clipMargin));
-
-    vts::Mesh clipped;
-    vts::opencv::Atlas clippedAtlas(0); // PNG!
-
-    std::size_t smIndex(0);
-    for (const auto &sm : mesh) {
-        const auto &texture(atlas.get(smIndex++));
-
-        auto m(vts::clip(sm, extents));
-        if (m.empty()) { continue; }
-
-        clipped.submeshes.push_back(std::move(m));
-        clippedAtlas.add(texture);
-    }
-
-    if (clipped.empty()) { return; }
-
-    // store in temporary storage
-    tools::repack(tileId, clipped, clippedAtlas);
-    ts_.store(tileId, clipped, clippedAtlas);
+    setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
+    return setup;
 }
 
 struct NodeId {
@@ -956,6 +602,27 @@ void write(slpk::Writer &writer
     }
 }
 
+inline void warpInPlace(vts::SubMesh &mesh, const geo::CsConvertor &conv)
+{
+    for (auto &v : mesh.vertices) { v = conv(v); }
+}
+
+inline void warpInPlace(vts::Mesh &mesh, const geo::CsConvertor &conv)
+{
+    for (auto &sm : mesh) { warpInPlace(sm, conv); }
+}
+
+math::Extents2 measureMesh(const vts::Mesh &mesh)
+{
+    math::Extents2 extents(math::InvalidExtents{});
+    for (const auto &sm : mesh) {
+        for (const auto &v : sm.vertices) {
+            math::update(extents, v(0), v(1));
+        }
+    }
+    return extents;
+}
+
 NodeHolder::pointer
 Generator::process(const vts::TileId &tileId, NodeId nodeId
                    , NodeHolder::pointer parent)
@@ -1113,9 +780,27 @@ int Vef2Slpk::run()
     }
 
     // measure mesh extents
-    auto setup(makeSetup(config_, input));
+    Setup setup;
+    if (!config_.resume) {
+        LOG(info3) << "Analyzing input...";
+        // not resuming, cut tiles
+        setup = makeSetup(config_, input);
+        LOG(info3) << "Analyzing input... done.";
 
-    Cutter(ts, input, config_, setup)(/* progress */);
+        // cu to tiles
+        vef::cutToTiles(ts, input, setup.workExtents
+                        , setup.src2work
+                        , setup.maxLod, config_.clipMargin);
+
+        // save setup
+        writeSetup(tmpTilesetPath / "setup.conf", setup);
+    } else {
+        // (try to) resume
+        LOG(info3) << "Resuming.";
+        setup = readSetup(tmpTilesetPath / "setup.conf");
+        // TODO: check for the same SRS etc.
+    }
+
     Generator(writer, ts, config_, setup)(/* progress */);
 
     // all done
