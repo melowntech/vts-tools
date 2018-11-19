@@ -350,11 +350,9 @@ inline std::string asString(const NodeId &nodeId) {
     return boost::lexical_cast<std::string>(nodeId);
 }
 
-void updateMbs(slpk::Node &parent, slpk::Node &child)
+void updateMbs(slpk::MinimumBoundingSphere &dst
+               , slpk::MinimumBoundingSphere &src)
 {
-    auto &dst(parent.mbs);
-    auto &src(child.mbs);
-
     if (!dst.r) {
         dst = src;
         return;
@@ -384,6 +382,7 @@ public:
 
     slpk::NodeReference reference;
     slpk::Node node;
+    slpk::MinimumBoundingSphere srcMbs;
     slpk::SharedResource sharedResource;
 
     NodeHolder(const NodeId &nodeId)
@@ -395,19 +394,22 @@ public:
         if (child) { children_.push_back(child); }
     }
 
-    void finish(NodeHolder *parent, const Setup &setup)
+    void finish(const Setup &setup)
     {
         // finish children first
-        for (auto &child : children_) { child->finish(this, setup); }
+        const bool emptyNode(!node.mbs.r);
 
-        // update parents MBS
-        if (parent) { updateMbs(parent->node, node); }
+        for (auto &child : children_) {
+            child->finish(setup);
+            if (emptyNode) {
+                updateMbs(srcMbs, child->srcMbs);
+            }
+        }
 
-        // convert MBS to dst SRS and write through to reference
-        if (node.mbs.r) {
-            // convert mbs to dst SRS
-            node.mbs.center = setup.work2dst(node.mbs.center);
-            reference.mbs = node.mbs;
+        if (emptyNode) {
+            auto mbs(srcMbs);
+            mbs.center = setup.work2dst(mbs.center);
+            reference.mbs = node.mbs = mbs;
         }
 
         // cross-reference children (N^2)
@@ -757,9 +759,13 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId)
         // measure mesh
         {
             auto mbs(miniball::minimumBoundingSphere(MeshVertices(*mesh)));
-            n.mbs.center = mbs.center;
+            node->srcMbs.center = mbs.center;
+            node->srcMbs.r = mbs.radius;
+
+            n.mbs.center = setup_.work2dst(mbs.center);
             n.mbs.r = mbs.radius;
         }
+        nodeReference.mbs = n.mbs;
 
         // convert mesh vertices to output SRS
         warpInPlace(*mesh, setup_.work2dst);
@@ -816,7 +822,7 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
                 root = process({}, {});
             }
 
-        root->finish({}, setup_);
+        root->finish(setup_);
         root->write(writer_);
     }
 
