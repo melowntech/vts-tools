@@ -1,3 +1,9 @@
+vts-tools (1.72) stable; urgency=medium
+
+  * Supporting proxy in storage.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 04 Dec 2018 15:27:24 +0100
+
 vts-tools (1.71) stable; urgency=medium
 
   * Proper handling of tileset.registry in tileset cloning.
