@@ -4,7 +4,8 @@ m4_dnl ###############################################################
 
 Package: ctt-vts-tools
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0)
+Depends: vts-tools (= ${binary:Version})
+         , ${shlibs:Depends}, ${misc:Depends}, vts-registry (>= 1.0)
 Description: VTS Tools (transitional package)
  Package rename ctt-vts-tools -> vts-tools
 
