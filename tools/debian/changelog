@@ -1,4 +1,4 @@
-vts-tools (1.73) stable; urgency=medium
+vts-tools (1.74) stable; urgency=medium
 
   * Added external URL support in glues and virtual surfaces.
 
