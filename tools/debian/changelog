@@ -1,3 +1,9 @@
+vts-tools (1.75) stable; urgency=medium
+
+  * mapconfig: support for absolute URL and view rename on save
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 04 Jan 2019 10:30:11 +0100
+
 vts-tools (1.74) stable; urgency=medium
 
   * Added external URL support in glues and virtual surfaces.
