@@ -1,3 +1,9 @@
+vts-tools (1.76) stable; urgency=medium
+
+  * mapconfig/save and vts/save can expand remote URLs to inline snippets
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Mon, 14 Jan 2019 18:00:35 +0100
+
 vts-tools (1.75) stable; urgency=medium
 
   * mapconfig: support for absolute URL and view rename on save
