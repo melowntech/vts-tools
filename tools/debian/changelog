@@ -1,3 +1,9 @@
+vts-tools (1.77) stable; urgency=medium
+
+  * stotageview: Using baseId for tagged tileset.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 24 Jan 2019 10:32:07 +0100
+
 vts-tools (1.76) stable; urgency=medium
 
   * mapconfig/save and vts/save can expand remote URLs to inline snippets
