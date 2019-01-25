@@ -1,3 +1,9 @@
+vts-tools (1.79) stable; urgency=medium
+
+  * mapconfig: path expander keeps scheme-less URLs without scheme
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 25 Jan 2019 11:21:40 +0100
+
 vts-tools (1.78) stable; urgency=medium
 
   * stotageview: Using baseId for tagged tileset.
