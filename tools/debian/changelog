@@ -1,4 +1,4 @@
-vts-tools (1.77) stable; urgency=medium
+vts-tools (1.78) stable; urgency=medium
 
   * stotageview: Using baseId for tagged tileset.
 
