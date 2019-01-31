@@ -1,3 +1,9 @@
+vts-tools (1.80) stable; urgency=medium
+
+  * mapconfig: view can contain generic options
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 31 Jan 2019 13:26:24 +0100
+
 vts-tools (1.79) stable; urgency=medium
 
   * mapconfig: path expander keeps scheme-less URLs without scheme
