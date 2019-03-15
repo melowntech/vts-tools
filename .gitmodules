@@ -55,3 +55,9 @@
 [submodule "externals/liblodtree"]
 	path = externals/liblodtree
 	url = https://github.com/Melown/liblodtree.git
+[submodule "externals/lib3dtiles"]
+	path = externals/lib3dtiles
+	url = https://github.com/Melown/lib3dtiles.git
+[submodule "externals/libgltf"]
+	path = externals/libgltf
+	url = https://github.com/Melown/libgltf.git

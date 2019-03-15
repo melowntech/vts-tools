@@ -62,6 +62,18 @@ buildsys_target_compile_definitions(vef2slpk ${MODULE_DEFINITIONS})
 buildsys_binary(vef2slpk)
 
 # ------------------------------------------------------------------------
+# 3dtiles2vts tool
+define_module(BINARY 3dtiles2vts
+  DEPENDS ${common_DEPENDS} 3dtiles>=1.0)
+set(3dtiles2vts_SOURCES
+  3dtiles2vts.cpp)
+
+add_executable(3dtiles2vts 3dtiles2vts.cpp)
+target_link_libraries(3dtiles2vts ${MODULE_LIBRARIES})
+buildsys_target_compile_definitions(3dtiles2vts ${MODULE_DEFINITIONS})
+buildsys_binary(3dtiles2vts)
+
+# ------------------------------------------------------------------------
 # installation
 install(TARGETS vef2vts lodtree2vts slpk2vts vef2slpk
   RUNTIME DESTINATION bin COMPONENT vts-tools)
