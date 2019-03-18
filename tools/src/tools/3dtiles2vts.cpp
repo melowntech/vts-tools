@@ -55,6 +55,7 @@
 #include "vts-libs/tools-support/repackatlas.hpp"
 #include "vts-libs/tools-support/analyze.hpp"
 
+#include "3dtiles/3dtiles.hpp"
 #include "3dtiles/reader.hpp"
 
 namespace po = boost::program_options;
@@ -225,13 +226,33 @@ usage
 const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
 
+
+void showTree(const tdt::Tile::pointer &tile, const std::string &prefix = "")
+{
+    std::cout << prefix;
+    if (tile->content) {
+        std::cout << tile->content->uri;
+    } else {
+        std::cout << "<no content>";
+    }
+    std::cout << "\n";
+
+    for (const auto &child : tile->children) {
+        showTree(child, prefix + "    ");
+    }
+}
+
+
 int Tdt2Vts::run()
 {
     vts::TileSetProperties properties;
     properties.referenceFrame = config_.referenceFrame;
     properties.id = config_.tilesetId;
 
-    tdt::Archive input(input_);
+    // open 3D Tiles archive, let it recusively load tileset
+    tdt::Archive ia(input_, {}, true);
+
+    showTree(ia.tileset().root);
 
     // all done
     LOG(info4) << "All done.";
