@@ -25,6 +25,7 @@
  */
 
 #include <boost/utility/in_place_factory.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include <opencv2/highgui/highgui.hpp>
 
@@ -57,10 +58,12 @@
 
 #include "3dtiles/3dtiles.hpp"
 #include "3dtiles/reader.hpp"
+#include "3dtiles/b3dm.hpp"
 
 namespace po = boost::program_options;
 namespace bio = boost::iostreams;
 namespace fs = boost::filesystem;
+namespace ba = boost::algorithm;
 namespace ublas = boost::numeric::ublas;
 namespace vs = vtslibs::storage;
 namespace vr = vtslibs::registry;
@@ -226,22 +229,32 @@ usage
 const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
 
+void load(tdt::Archive &ia, const std::string &path)
+{
+    if (ba::iends_with(path, ".b3dm")) {
+        auto model(tdt::b3dm(*ia.istream(path), path));
+        std::cout << " rct: " << std::fixed << model.rtcCenter;
+    } else {
+        std::cout << " unsupported media type";
+    }
+}
 
-void showTree(const tdt::Tile::pointer &tile, const std::string &prefix = "")
+void showTree(tdt::Archive &ia, const tdt::Tile::pointer &tile
+              , const std::string &prefix = "")
 {
     std::cout << prefix;
     if (tile->content) {
         std::cout << tile->content->uri;
+        load(ia, tile->content->uri);
     } else {
         std::cout << "<no content>";
     }
     std::cout << "\n";
 
     for (const auto &child : tile->children) {
-        showTree(child, prefix + "    ");
+        showTree(ia, child, prefix + "    ");
     }
 }
-
 
 int Tdt2Vts::run()
 {
@@ -252,7 +265,7 @@ int Tdt2Vts::run()
     // open 3D Tiles archive, let it recusively load tileset
     tdt::Archive ia(input_, {}, true);
 
-    showTree(ia.tileset().root);
+    showTree(ia, ia.tileset().root);
 
     // all done
     LOG(info4) << "All done.";
