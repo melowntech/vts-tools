@@ -69,6 +69,7 @@ add_subdirectory(src/vts-libs)
 add_subdirectory(src/vef)
 add_subdirectory(src/slpk)
 add_subdirectory(src/lodtree)
+
 add_subdirectory(src/gltf)
 add_subdirectory(src/3dtiles)
 

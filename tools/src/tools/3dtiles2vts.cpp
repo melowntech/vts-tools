@@ -233,7 +233,7 @@ void load(tdt::Archive &ia, const std::string &path)
 {
     if (ba::iends_with(path, ".b3dm")) {
         auto model(tdt::b3dm(*ia.istream(path), path));
-        std::cout << " rct: " << std::fixed << model.rtcCenter;
+        std::cout << " rtc: " << std::fixed << model.rtcCenter;
     } else {
         std::cout << " unsupported media type";
     }
