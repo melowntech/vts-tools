@@ -1,3 +1,10 @@
+vts-tools (1.82) stable; urgency=medium
+
+  * Supporting boundlayer options in tms resource definition
+  * Supporting freelayer options in geodata resource definition
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 21 Mar 2019 10:23:58 +0100
+
 vts-tools (1.81) stable; urgency=medium
 
   * vts: added commands --tile-status and --vs-info
