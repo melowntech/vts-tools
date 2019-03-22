@@ -70,8 +70,12 @@ add_subdirectory(src/vef)
 add_subdirectory(src/slpk)
 add_subdirectory(src/lodtree)
 
-add_subdirectory(src/gltf)
-add_subdirectory(src/3dtiles)
+
+if (NOT BUILDSYS_LIMITED_CPP11)
+  # these are supported only when building on modern systems
+  add_subdirectory(src/gltf)
+  add_subdirectory(src/3dtiles)
+endif()
 
 # tools
 add_subdirectory(src/tools)

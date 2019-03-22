@@ -229,11 +229,20 @@ usage
 const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
 
+struct MeshLoader : gltf::MeshLoader {
+    virtual void addVertex(const math::Point3d&) {}
+    virtual void addTexture(const math::Point2d&) {}
+    virtual void addFace(const Face&) {}
+    virtual void newMesh() {
+        LOG(info4) << "newMesh()";
+    }
+};
+
 void load(tdt::Archive &ia, const std::string &path)
 {
     if (ba::iends_with(path, ".b3dm")) {
-        auto model(tdt::b3dm(*ia.istream(path), path));
-        std::cout << " rtc: " << std::fixed << model.rtcCenter;
+        MeshLoader loader;
+        ia.loadMesh(loader, path);
     } else {
         std::cout << " unsupported media type";
     }
