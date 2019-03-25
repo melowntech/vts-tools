@@ -39,6 +39,8 @@
 
 #include "geometry/meshop.hpp"
 
+#include "imgproc/imagesize.hpp"
+
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts.hpp"
 #include "vts-libs/vts/encoder.hpp"
@@ -235,6 +237,9 @@ struct MeshLoader : gltf::MeshLoader {
     virtual void addFace(const Face&) {}
     virtual void newMesh() {
         LOG(info4) << "newMesh()";
+    }
+    virtual void addImage(std::istream &is) {
+        LOG(info4) << "New image: " << imgproc::imageSize(is);
     }
 };
 
