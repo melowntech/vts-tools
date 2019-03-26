@@ -232,14 +232,24 @@ const vt::ExternalProgress::Weights weightsFull{10, 40, 40, 10};
 const vt::ExternalProgress::Weights weightsResume{40, 10};
 
 struct MeshLoader : gltf::MeshLoader {
-    virtual void addVertex(const math::Point3d&) {}
-    virtual void addTexture(const math::Point2d&) {}
-    virtual void addFace(const Face&) {}
-    virtual void newMesh() {
+    virtual void mesh() {
         LOG(info4) << "newMesh()";
     }
-    virtual void addImage(std::istream &is) {
+
+    virtual void image(std::istream &is) {
         LOG(info4) << "New image: " << imgproc::imageSize(is);
+    }
+
+    virtual void vertices(const math::Points3 &v) {
+        LOG(info4) << "Loaded " << v.size() << " vertices.";
+    }
+
+    virtual void tc(const math::Points2 &tc) {
+        LOG(info4) << "Loaded " << tc.size() << " texture coordinates.";
+    }
+
+    virtual void faces(const Faces &faces) {
+        LOG(info4) << "Loaded " << faces.size() << " faces.";
     }
 };
 
