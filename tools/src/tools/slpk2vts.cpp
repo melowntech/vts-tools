@@ -378,7 +378,7 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
             }
         }
 
-        // compute mesh are in each RF node
+        // compute mesh area in each RF node
         for (const auto &rfNode : nodes) {
             const vts::CsConvertor conv(inputSrs, rfNode.srs());
             const auto mi(tools::measureMesh(rfNode, conv, loader.mesh()
