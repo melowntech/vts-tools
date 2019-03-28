@@ -544,7 +544,7 @@ void Cutter::cutNode(const slpk::Node &node, const tools::LodInfo &lodInfo)
             }
         }
 
-        // projested mesh/atlas
+        // projected mesh/atlas
         vts::Mesh mesh;
         RegionInfo::list textureRegions;
         vts::opencv::Atlas atlas;
