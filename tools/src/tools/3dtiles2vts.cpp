@@ -292,6 +292,18 @@ void addImage(SizeOnlyAtlas &atlas, const gltf::DataView &data
     atlas.add(imgproc::imageSize(data.first, gltf::size(data), filename));
 }
 
+void addImage(vts::opencv::Atlas &atlas, const gltf::DataView &data
+              , const std::string &filename)
+{
+    std::vector<std::uint8_t> d(data.first, data.second);
+    auto image(cv::imdecode(d, CV_LOAD_IMAGE_COLOR));
+    if (!image.data) {
+        LOGTHROW(err2, vs::FormatError)
+            << "Cannot decode texture image from <" << filename << ">.";
+    }
+    atlas.add(image);
+}
+
 template <typename Atlas>
 class VtsMeshLoader : public gltf::MeshLoader {
 public:
@@ -299,7 +311,7 @@ public:
         : filename_(filename)
         , sm_(nullptr)
     {
-        LOG(info2) << "Loading mesh from " << filename << ".";
+        LOG(info1) << "Loading mesh from <" << filename << ">.";
     }
 
     std::pair<vts::Mesh&, Atlas&> get() {
@@ -345,39 +357,6 @@ protected:
 
 // ------------------------------------------------------------------------
 
-class Cutter {
-public:
-    Cutter(const Config &config, const vr::ReferenceFrame &rf
-           , tools::TmpTileset &tmpset, vts::NtGenerator &ntg
-           , const tdt::Archive &archive)
-        : config_(config), rf_(rf), tmpset_(tmpset), ntg_(ntg)
-        , archive_(archive), tileset_(archive.tileset())
-        , nodes_(vts::NodeInfo::leaves(rf_))
-    {}
-
-    void run(vt::ExternalProgress &progress);
-
-private:
-    void cutNode(const tdt::Tile &node
-                 , const tools::LodInfo &lodInfo);
-
-    void splitToTiles(const tdt::Tile &tdtTile
-                      , const vts::NodeInfo &root
-                      , vts::Lod lod, const vts::TileRange &tr
-                      , const vts::Mesh &mesh
-                      , const vts::opencv::Atlas &atlas
-                      , vts::TileIndex::Flag::value_type tileFlags);
-
-    const Config &config_;
-    const vr::ReferenceFrame &rf_;
-    tools::TmpTileset &tmpset_;
-    vts::NtGenerator &ntg_;
-    const tdt::Archive &archive_;
-    const tdt::Tileset &tileset_;
-
-    const vts::NodeInfo::list nodes_;
-};
-
 struct TileInfo {
     const tdt::Tile *tile;
     const tdt::TilePath path;
@@ -391,10 +370,47 @@ struct TileInfo {
     using list = std::vector<TileInfo>;
 };
 
+class Cutter {
+public:
+    Cutter(const Config &config, const vr::ReferenceFrame &rf
+           , tools::TmpTileset &tmpset, vts::NtGenerator &ntg
+           , const tdt::Archive &archive)
+        : config_(config), rf_(rf), tmpset_(tmpset), ntg_(ntg)
+        , archive_(archive), tileset_(archive.tileset())
+        , nodes_(vts::NodeInfo::leaves(rf_))
+    {}
+
+    void run(vt::ExternalProgress &progress);
+
+private:
+    void cut3DTile(const TileInfo &ti, const tools::LodInfo &lodInfo);
+
+    void splitToTiles(const std::string &tilePath
+                      , const vts::NodeInfo &root
+                      , vts::Lod lod, const vts::TileRange &tr
+                      , const vts::Mesh &mesh
+                      , const vts::opencv::Atlas &atlas
+                      , vts::TileIndex::Flag::value_type tileFlags);
+
+    void cutTile(const std::string &tilePath, const vts::NodeInfo &node
+                 , const vts::Mesh &mesh
+                 , const vts::opencv::Atlas &atlas
+                 , vts::TileIndex::Flag::value_type tileFlags);
+
+    const Config &config_;
+    const vr::ReferenceFrame &rf_;
+    tools::TmpTileset &tmpset_;
+    vts::NtGenerator &ntg_;
+    const tdt::Archive &archive_;
+    const tdt::Tileset &tileset_;
+
+    const vts::NodeInfo::list nodes_;
+};
+
 std::string TileInfo::makePath() const
 {
     std::ostringstream os;
-    os << tile->content->uri << "#" << path;
+    os << tile->content->uri << '[' << path << ']';
     return os.str();
 }
 
@@ -466,7 +482,10 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
         const auto path(ti.makePath());
 
         VtsMeshLoader<SizeOnlyAtlas> loader(path);
-        archive.loadMesh(loader, tile.content->uri);
+        gltf::MeshLoader::DecodeOptions options;
+        // TODO: add 3D Tile transformation matrix
+        options.flipTc = true;
+        archive.loadMesh(loader, tile.content->uri, options);
 
         auto m(loader.get());
         const auto &mesh(m.first);
@@ -506,14 +525,8 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
 
 void Cutter::run(vt::ExternalProgress &progress)
 {
-    (void) progress;
-
     // analyze first
     const auto lodInfo(analyze(progress, config_, nodes_, archive_));
-
-#if 0
-    // analyze first
-    const auto lodInfo(analyze(progress, config_, nodes_, tlsTiles, archive_));
 
     // compute navtile information (adds accumulators)
     for (const auto &item : lodInfo.localLods) {
@@ -522,19 +535,232 @@ void Cutter::run(vt::ExternalProgress &progress)
                                   , config_.ntLodPixelSize);
     }
 
-    // update progress
-    progress.expect(tlsTiles.size());
+    const auto &root(*archive_.tileset().root);
 
+    // collect info for OpenMP (again, now all with beef)
+    TileInfo::list tiles;
+    traverse(root, [&](const tdt::Tile &tile, const tdt::TilePath &path)
+             -> void
+    {
+        if (tile.content) {
+            tiles.emplace_back(&tile, path);
+        }
+    });
+    progress.expect(tiles.size());
 
-    const std::size_t nlSize(tlsTiles.size());
-    UTILITY_OMP(parallel for schedule(dynamic))
-    for (std::size_t i = 0; i < nlSize; ++i) {
-        const auto &node(*tlsTiles[i]);
-        cutNode(node, lodInfo);
+    UTILITY_OMP(parallel for shared(tiles) schedule(dynamic))
+    for (std::size_t i = 0; i < tiles.size(); ++i) {
+        cut3DTile(tiles[i], lodInfo);
         ++progress;
     }
+}
 
-#endif
+
+void Cutter::cut3DTile(const TileInfo &ti, const tools::LodInfo &lodInfo)
+{
+    const auto &tile(*ti.tile);
+    const auto tilePath(ti.makePath());
+    const auto depth(ti.path.depth());
+
+    // load mesh and all textures
+    VtsMeshLoader<vts::opencv::Atlas> loader(tilePath);
+    gltf::MeshLoader::DecodeOptions options;
+    // TODO: add 3D Tile transformation matrix
+    options.flipTc = true;
+    archive_.loadMesh(loader, tile.content->uri, options);
+
+    auto m(loader.get());
+    const auto &inMesh(m.first);
+    const auto &inAtlas(m.second);
+
+    // for each valid rfnode
+    for (const auto &item : lodInfo.localLods) {
+        const auto rfNode(*item.first);
+        const auto bottomLod(item.second);
+        const vts::CsConvertor conv(config_.inputSrs, rfNode.srs());
+
+        // compute local lod + sanity check
+        const auto fromBottom(lodInfo.bottomDepth - depth);
+        if (fromBottom > bottomLod) {
+            // out of reference frame -> skip
+            continue;
+        }
+
+        const vts::Lod localLod(bottomLod - fromBottom);
+        const auto lod(localLod + rfNode.nodeId().lod);
+
+        /** (extra) Tile flags to be stored along generate tiles from this 3D
+         *  Tile
+         */
+        vts::TileIndex::Flag::value_type tileFlags(0);
+        if (depth <= lodInfo.commonBottom) {
+            // mark all tiles not below common bottom level as watertight
+            tileFlags |= vts::TileIndex::Flag::watertight;
+
+            if (depth == lodInfo.commonBottom) {
+                // mark all tiles at commom bottom level as alien
+                tileFlags |= vts::TileIndex::Flag::alien;
+            }
+        }
+
+        // projected mesh/atlas
+        vts::Mesh mesh;
+        vts::opencv::Atlas atlas;
+
+        // and for each submesh
+        std::size_t meshIndex(0);
+        for (auto &sm : inMesh) {
+            const auto &texture(inAtlas.get(meshIndex++));
+
+            // make all faces valid by default
+            vts::VertexMask valid(sm.vertices.size(), true);
+            math::Points3 projected;
+            projected.reserve(sm.vertices.size());
+
+            auto ivalid(valid.begin());
+            for (const auto &v : sm.vertices) {
+                try {
+                    projected.push_back(conv(v));
+                    // apply zShift
+                    if (config_.zShift) {
+                        projected.back()(2) += config_.zShift;
+                    }
+                    ++ivalid;
+                } catch (const std::exception&) {
+                    // failed to convert vertex, mask it and skip
+                    projected.emplace_back();
+                    *ivalid++ = false;
+                }
+            }
+
+            // clip mesh to node's extents
+            // FIXME: implement actual mask application in clipping!
+            vts::FaceOriginList faceOrigin;
+            auto osm(vts::clip(sm, projected, rfNode.extents(), valid
+                               , &faceOrigin));
+            if (osm.faces.empty()) { continue; }
+
+            // at least one face survived, remember
+
+            mesh.submeshes.push_back(std::move(osm));
+            atlas.add(texture);
+        }
+
+        // anything there?
+        if (mesh.empty()) { continue; }
+
+        // compute local tile range
+        auto tr(tools::computeTileRange(rfNode.extents(), localLod
+                                        , tools::computeExtents(mesh)));
+
+        // convert local tilerange to global tilerange
+        {
+            const auto origin
+                (vts::lowestChild(vts::point(rfNode.nodeId()), localLod));
+            tr.ll += origin;
+            tr.ur += origin;
+        }
+
+        // split to tiles
+        LOG(info3) << "Splitting 3D Tile <" << tilePath
+                   << "> to tiles in " << lod << "/" << tr << ".";
+        splitToTiles(tilePath, rfNode, lod, tr, mesh, atlas, tileFlags);
+    }
+}
+
+void Cutter::splitToTiles(const std::string &tilePath
+                          , const vts::NodeInfo &root
+                          , vts::Lod lod, const vts::TileRange &tr
+                          , const vts::Mesh &mesh
+                          , const vts::opencv::Atlas &atlas
+                          , vts::TileIndex::Flag::value_type tileFlags)
+{
+    if (config_.tileExtents) {
+        // check for range validity
+        const auto &rootId(root.nodeId());
+        if (lod < config_.tileExtents->lod) {
+            LOG(info2)
+                << "Nothing to cut from 3D Tile <" << tilePath << ">.";
+        }
+
+        const auto gtr(vts::global(rootId, lod, tr));
+        const auto extents(vts::shiftRange(*config_.tileExtents, lod));
+
+        if (!vts::tileRangesOverlap(gtr, extents)) {
+            LOG(info2)
+                << "Nothing to cut from 3D Tile <" << tilePath << ">"
+                << ", gtr: " << gtr << ", extents: " << extents << ".";
+            return;
+        }
+    }
+
+    typedef vts::TileRange::value_type Index;
+    Index je(tr.ur(1));
+    Index ie(tr.ur(0));
+
+    for (Index j = tr.ll(1); j <= je; ++j) {
+        for (Index i = tr.ll(0); i <= ie; ++i) {
+            vts::TileId tileId(lod, i, j);
+            const auto node(root.child(tileId));
+            cutTile(tilePath, node, mesh, atlas, tileFlags);
+        }
+    }
+}
+
+void Cutter::cutTile(const std::string &tilePath, const vts::NodeInfo &node
+                     , const vts::Mesh &mesh
+                     , const vts::opencv::Atlas &atlas
+                     , vts::TileIndex::Flag::value_type tileFlags)
+{
+    // compute border condition (defaults to all available)
+    vts::BorderCondition borderCondition;
+    if (config_.tileExtents) {
+        borderCondition = vts::inside(*config_.tileExtents, node.nodeId());
+        if (!borderCondition) {
+            LOG(info1)
+                << node.nodeId() << ": Nothing to cut from 3D Tile <"
+                << tilePath << ">.";
+            return;
+        }
+    }
+
+    // compute clip extents
+    const auto extents(vts::inflateTileExtents
+                       (node.extents(), config_.clipMargin
+                        , borderCondition, config_.borderClipMargin));
+
+    vts::Mesh clipped;
+    vts::opencv::Atlas clippedAtlas(0); // PNG!
+
+    std::size_t smIndex(0);
+    std::size_t faces(0);
+    for (const auto &sm : mesh) {
+        const auto &texture(atlas.get(smIndex++));
+
+        auto m(vts::clip(sm, extents));
+        if (m.empty()) { continue; }
+
+        clipped.submeshes.push_back(std::move(m));
+        clippedAtlas.add(texture);
+        faces += clipped.submeshes.back().faces.size();
+    }
+
+    if (clipped.empty()) {
+        LOG(info1)
+            << node.nodeId() << ": Nothing cut from 3D Tile <"
+            << tilePath << ">.";
+        return;
+    }
+
+    LOG(info2)
+        << node.nodeId() << ": Cut " << faces
+        << " faces from 3D Tile <" << tilePath << ">.";
+
+    // store in temporary storage
+    const auto tileId(node.nodeId());
+
+    tools::repack(tileId, clipped, clippedAtlas);
+    tmpset_.store(tileId, clipped, clippedAtlas, tileFlags);
 }
 
 // ------------------------------------------------------------------------
