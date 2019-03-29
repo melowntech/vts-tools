@@ -370,6 +370,20 @@ struct TileInfo {
     using list = std::vector<TileInfo>;
 };
 
+/** Tile Cutter.
+ *
+ *  Code in this class depends on the fact that loaded 3D Tiles tileset has
+ *  these properties:
+ *
+ *    * all referenced tilesets are included in one tile tree
+ *    * tile.refine is set for every tile (inherited from parent)
+ *    * tile.transform is set and reflects root transformation
+ *
+ *  These properties are guaranteed by tdt::Archive::tileset() function.
+ *
+ *  Preconditions:
+ *    * The tiles at the bottom of the tree must have the same level of detail.
+ */
 class Cutter {
 public:
     Cutter(const Config &config, const vr::ReferenceFrame &rf
@@ -423,18 +437,19 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
                << " 3D Tiles).";
 
     const auto &root(*archive.tileset().root);
-    if (!root.refine || (root.refine != tdt::Refinement::replace)) {
-        LOGTHROW(err2, std::runtime_error)
-            << "Only <" << tdt::Refinement::replace
-            << "> refinement is supported.";
-    }
 
     auto lodInfo(tools::LodInfo::invalid());
 
     traverse(root, [&](const tdt::Tile &tile, const tdt::TilePath &path)
              -> void
     {
-        LOG(info4) << "Processing tile <" << path << ">";
+        LOG(info2) << "Analyzing tile <" << path << ">";
+
+        if (*tile.refine != tdt::Refinement::replace) {
+            LOGTHROW(err2, std::runtime_error)
+                << "Only <" << tdt::Refinement::replace
+                << "> refinement is supported.";
+        }
 
         if (!tile.content) { return; }
 
@@ -483,8 +498,8 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
 
         VtsMeshLoader<SizeOnlyAtlas> loader(path);
         gltf::MeshLoader::DecodeOptions options;
-        // TODO: add 3D Tile transformation matrix
         options.flipTc = true;
+        options.trafo = *tile.transform;
         archive.loadMesh(loader, tile.content->uri, options);
 
         auto m(loader.get());
@@ -550,6 +565,7 @@ void Cutter::run(vt::ExternalProgress &progress)
 
     UTILITY_OMP(parallel for shared(tiles) schedule(dynamic))
     for (std::size_t i = 0; i < tiles.size(); ++i) {
+        // TODO: add progress to log lines
         cut3DTile(tiles[i], lodInfo);
         ++progress;
     }
