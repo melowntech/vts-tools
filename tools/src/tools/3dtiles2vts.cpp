@@ -315,7 +315,6 @@ public:
     }
 
     std::pair<vts::Mesh&, Atlas&> get() {
-        // TODO: optimize mesh
         if (mesh_.submeshes.size() != atlas_.size()) {
             LOGTHROW(err2, std::runtime_error)
                 << "Some submeshes are not textured in tile <"
@@ -581,11 +580,11 @@ void Cutter::cut3DTile(const TileInfo &ti, const tools::LodInfo &lodInfo)
     // load mesh and all textures
     VtsMeshLoader<vts::opencv::Atlas> loader(tilePath);
     gltf::MeshLoader::DecodeOptions options;
-    // TODO: add 3D Tile transformation matrix
     options.flipTc = true;
     options.trafo = *tile.transform;
     archive_.loadMesh(loader, tile.content->uri, options);
 
+    // TODO: optimize mesh (remove duplicities in vertices and tc)
     auto m(loader.get());
     const auto &inMesh(m.first);
     const auto &inAtlas(m.second);
