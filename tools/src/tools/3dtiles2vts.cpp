@@ -583,6 +583,7 @@ void Cutter::cut3DTile(const TileInfo &ti, const tools::LodInfo &lodInfo)
     gltf::MeshLoader::DecodeOptions options;
     // TODO: add 3D Tile transformation matrix
     options.flipTc = true;
+    options.trafo = *tile.transform;
     archive_.loadMesh(loader, tile.content->uri, options);
 
     auto m(loader.get());
