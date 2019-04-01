@@ -57,8 +57,8 @@ add_subdirectory(src/jsoncpp)
 add_subdirectory(src/geo)
 add_subdirectory(src/gdal-drivers)
 add_subdirectory(src/half)
-add_subdirectory(src/roarchive)
 add_subdirectory(src/http)
+add_subdirectory(src/roarchive)
 add_subdirectory(src/miniball)
 
 # vts libraries: force build and install of vts-tools
