@@ -57,6 +57,7 @@
 #include "vts-libs/tools-support/tmptsencoder.hpp"
 #include "vts-libs/tools-support/repackatlas.hpp"
 #include "vts-libs/tools-support/analyze.hpp"
+#include "vts-libs/tools-support/optimizemesh.hpp"
 
 #include "3dtiles/3dtiles.hpp"
 #include "3dtiles/reader.hpp"
@@ -313,6 +314,8 @@ public:
     {
         LOG(info1) << "Loading mesh from <" << filename << ">.";
     }
+
+    void optimize() { tools::optimize(mesh_); }
 
     std::pair<vts::Mesh&, Atlas&> get() {
         if (mesh_.submeshes.size() != atlas_.size()) {
@@ -583,8 +586,8 @@ void Cutter::cut3DTile(const TileInfo &ti, const tools::LodInfo &lodInfo)
     options.flipTc = true;
     options.trafo = *tile.transform;
     archive_.loadMesh(loader, tile.content->uri, options);
+    loader.optimize();
 
-    // TODO: optimize mesh (remove duplicities in vertices and tc)
     auto m(loader.get());
     const auto &inMesh(m.first);
     const auto &inAtlas(m.second);
