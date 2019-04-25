@@ -8,7 +8,7 @@ and manipulation.
 
 VTS-Tools user documentation is being created in [separate
 project](https://github.com/melown/workshop) and can be seen
-on [ReadTheDocs.io](https://melown.readthedocs.io)
+on [ReadTheDocs.io](https://vts-geospatial.org)
 
 ## Download, build and install
 
