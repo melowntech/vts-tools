@@ -522,7 +522,6 @@ Assignment::plist analyzeNodeAssignments(const std::string &srs
 
             // compute difference from mean best lod
             const double diff(std::abs(assignment->bestLod - meanLod));
-            LOG(info4) << "diff: " << diff;
 
             if (diff <= diffLimit) {
                 // fits in range -> assign lod and remove from list
