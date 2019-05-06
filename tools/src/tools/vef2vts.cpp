@@ -58,6 +58,7 @@
 #include "imgproc/jpeg.hpp"
 
 #include "geometry/parse-obj.hpp"
+#include "geometry/polygon.hpp"
 
 #include "geo/csconvertor.hpp"
 #include "geo/coordinates.hpp"
@@ -103,6 +104,7 @@ struct Config : tools::TmpTsEncoder::Config {
     double clipMargin;
     double borderClipMargin;
     double sigmaEditCoef;
+    boost::optional<double> nominalResolution;
 
     double zShift;
 
@@ -160,6 +162,11 @@ struct Config : tools::TmpTsEncoder::Config {
              "sigmaEditCoef * sigma are assigned "
              "round(mean best LOD).")
 
+            ("tweak.nominalResolution", po::value<double>()
+             , "Nominal resolution of input data (in input data SRS units). "
+             "Will be used to determine output LOD if set. Enforced to all "
+             "input windows. Use wisely.")
+
             ("zShift", po::value(&zShift)
              ->default_value(zShift)->required()
              , "Manual height adjustment (value is "
@@ -172,6 +179,10 @@ struct Config : tools::TmpTsEncoder::Config {
 
         if (vars.count("tileExtents")) {
             tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
+        }
+
+        if (vars.count("tweak.nominalResolution")) {
+            nominalResolution = vars["tweak.nominalResolution"].as<double>();
         }
     }
 };
@@ -487,10 +498,13 @@ statistics(const Assignment::plist &assignments)
     return res;
 }
 
-Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
+Assignment::plist analyzeNodeAssignments(const std::string &srs
+                                         , Assignment::plist nodeAssignments
                                          , double sigmaEditCoef)
 {
     Assignment::plist out;
+
+    std::vector<std::pair<vts::Lod, int>> histogram;
 
     while (!nodeAssignments.empty()) {
         double meanLod, stddev;
@@ -499,6 +513,8 @@ Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
         const double diffLimit(sigmaEditCoef * stddev);
         vts::Lod lod(std::round(meanLod));
 
+        std::size_t count(0);
+
         for (auto inodeAssignments(nodeAssignments.begin());
              inodeAssignments != nodeAssignments.end(); )
         {
@@ -506,6 +522,7 @@ Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
 
             // compute difference from mean best lod
             const double diff(std::abs(assignment->bestLod - meanLod));
+            LOG(info4) << "diff: " << diff;
 
             if (diff <= diffLimit) {
                 // fits in range -> assign lod and remove from list
@@ -513,10 +530,21 @@ Assignment::plist analyzeNodeAssignments(Assignment::plist nodeAssignments
                 inodeAssignments = nodeAssignments.erase(inodeAssignments);
                 if (!assignment->lodRange.empty()) {
                     out.push_back(assignment);
+                    ++count;
                 }
             } else {
                 ++inodeAssignments;
             }
+        }
+
+        if (count) {  histogram.emplace_back(lod, count); }
+    }
+
+    if (!histogram.empty()) {
+        LOG(info3) << "Input assignment statistics in <" << srs
+                   << ">: LOD: count";
+        for (const auto &entry : histogram) {
+            LOG(info3) << "    " << entry.first << ": " << entry.second;
         }
     }
 
@@ -690,7 +718,8 @@ void Analyzer::analyze(Assignment::maplist &assignments)
         }
 
         const auto analyzed
-            (analyzeNodeAssignments(nodeAssignments, config_.sigmaEditCoef));
+            (analyzeNodeAssignments(node.srs(), nodeAssignments
+                                    , config_.sigmaEditCoef));
 
         if (analyzed.empty()) { continue; }
 
@@ -775,23 +804,70 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
             continue;
         }
 
-        // calculate area (only valid faces)
-        const auto a(area(mesh));
+        // calculate optimal tile area
+        double optimalTileArea(0.0);
 
-        // denormalize texture area
-        double textureArea(.0);
-        auto iasm(a.submeshes.begin());
-        for (const auto &texture : window.atlas) {
-            const auto &as(*iasm++);
-            textureArea +=
-                (as.internalTexture * math::area(texture.size));
+        if (config_.nominalResolution) {
+            // use provided nominal resolution
+            math::Size2f thSize(config_.optimalTextureSize.width
+                                       * *config_.nominalResolution / 2.0
+                                       , config_.optimalTextureSize.height
+                                       * *config_.nominalResolution / 2.0);
+
+            // compute center in destination SRS
+            math::Point3d dstCenter;
+            {
+                math::Extents3 e(math::InvalidExtents{});
+                for (const auto &sm : mesh) {
+                    update(e, computeExtents(sm.vertices));
+                }
+
+                dstCenter = math::center(e);
+            }
+
+            const auto srcCenter(conv.inverse()(dstCenter));
+
+            // construct a tile in the source SRS around origin mesh center
+            math::Points2 src {
+                math::Point2(srcCenter(0) - thSize.width
+                             , srcCenter(1) + thSize.height)
+                , math::Point2(srcCenter(0) + thSize.width
+                               , srcCenter(1) + thSize.height)
+                , math::Point2(srcCenter(0) + thSize.width
+                               , srcCenter(1) - thSize.height)
+                , math::Point2(srcCenter(0) - thSize.width
+                               , srcCenter(1) - thSize.height)
+            };
+
+            math::Points2 dst;
+            for (const auto &v : src) { dst.push_back(conv(v)); }
+            // make closed
+            dst.push_back(dst.front());
+
+            // and compute dst tile area
+            optimalTileArea = abs(geometry::area(dst));
+        } else {
+            // calculate from mesh data
+
+            // calculate area (only valid faces)
+            const auto a(area(mesh));
+
+            // denormalize texture area
+            double textureArea(.0);
+            auto iasm(a.submeshes.begin());
+            for (const auto &texture : window.atlas) {
+                const auto &as(*iasm++);
+                textureArea +=
+                    (as.internalTexture * math::area(texture.size));
+            }
+
+            const double texelArea(a.mesh / textureArea);
+            optimalTileArea = area(config_.optimalTextureSize) * texelArea;
         }
 
-        const double texelArea(a.mesh / textureArea);
-        const auto optimalTileArea
-            (area(config_.optimalTextureSize) * texelArea);
-        const auto optimalTileCount(node.extents().area() / optimalTileArea);
-        const auto bestLod(0.5 * std::log2(optimalTileCount));
+        const auto optimalTileCount(node.extents().area()
+                                    / optimalTileArea);
+        auto bestLod(0.5 * std::log2(optimalTileCount));
 
         if (bestLod < 0) { continue; }
 
