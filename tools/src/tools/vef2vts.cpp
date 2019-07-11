@@ -782,7 +782,7 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
                 try {
                     projected.push_back(conv(v));
                     ++ivalid;
-                } catch (std::exception) {
+                } catch (const std::exception&) {
                     // failed to convert vertex, mask it and skip
                     projected.emplace_back();
                     *ivalid++ = false;
@@ -1043,7 +1043,7 @@ void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
                         projected.back()(2) += config_.zShift;
                     }
                     ++ivalid;
-                } catch (std::exception) {
+                } catch (const std::exception&) {
                     // failed to convert vertex, mask it and skip
                     projected.emplace_back();
                     *ivalid++ = false;

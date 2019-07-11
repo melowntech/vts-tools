@@ -608,9 +608,8 @@ struct MeshSaver : slpk::MeshSaver {
                   , normalize(sm.tc[f(2)]) }};
     }
 
-    math::Point2 normalize(math::Point2 p) const {
-        p(1) = 1.0 - p(1);
-        return p;
+    math::Point2 normalize(const math::Point2 &p) const {
+        return { p(0), 1.0 - p(1) };
     }
 
     const slpk::Node &node;
