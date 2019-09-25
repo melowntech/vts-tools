@@ -1,3 +1,9 @@
+vts-tools (1.84) stable; urgency=medium
+
+  * Added 3dtiles2vts tool.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 25 Sep 2019 12:12:06 +0000
+
 vts-tools (1.83) stable; urgency=medium
 
   * Added tweak.nominalResolution option to vef2vts.
