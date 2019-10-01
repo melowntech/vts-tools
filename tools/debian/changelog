@@ -1,3 +1,9 @@
+vts-tools (1.85) stable; urgency=medium
+
+  * Updated slpk2vts.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 01 Oct 2019 12:02:39 +0000
+
 vts-tools (1.84) stable; urgency=medium
 
   * Added 3dtiles2vts tool.
