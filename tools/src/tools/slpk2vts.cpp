@@ -689,18 +689,33 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
 
     vts::Mesh clipped;
     vts::opencv::Atlas clippedAtlas(0); // PNG!
+    RegionInfo::list clippedRegions;
 
     std::size_t smIndex(0);
     std::size_t faces(0);
     for (const auto &sm : mesh) {
-        const auto &texture(atlas.get(smIndex++));
+        const auto &texture(atlas.get(smIndex));
+        const auto &ri(textureRegions[smIndex]);
+        ++smIndex;
 
-        auto m(vts::clip(sm, extents));
+        vts::FaceOriginList faceOrigin;
+
+        auto m(vts::clip(sm, extents, vts::VertexMask(), &faceOrigin));
         if (m.empty()) { continue; }
 
         clipped.submeshes.push_back(std::move(m));
         clippedAtlas.add(texture);
         faces += clipped.submeshes.back().faces.size();
+
+        // get texturing info
+        clippedRegions.emplace_back(ri.regions);
+        auto &tr(clippedRegions.back());
+        // remap face regions (if any)
+        if (!ri.regions.empty()) {
+            for (const auto fo : faceOrigin) {
+                tr.faces.push_back(ri.faces[fo]);
+            }
+        }
     }
 
     if (clipped.empty()) {
@@ -717,7 +732,7 @@ void Cutter::cutTile(const slpk::Node &slpkNode, const vts::NodeInfo &node
     // store in temporary storage
     const auto tileId(node.nodeId());
 
-    tools::repack(tileId, clipped, clippedAtlas, textureRegions);
+    tools::repack(tileId, clipped, clippedAtlas, clippedRegions);
     tmpset_.store(tileId, clipped, clippedAtlas, tileFlags);
 }
 
@@ -765,6 +780,23 @@ int Slpk2Vts::run()
         input = boost::in_place(input_);
 
         // TODO: sanity check: mesh-pyramids, non-local
+        const auto& sli(input->sceneLayerInfo());
+        switch (sli.layerType) {
+        case slpk::LayerType::integratedMesh:
+        case slpk::LayerType::object:
+            break;
+
+        default:
+            LOG(fatal)
+                << "Unsupported layer type <" << sli.layerType << ">.";
+            return EXIT_FAILURE;
+        }
+
+        if (sli.store->profile != slpk::Profile::meshpyramids) {
+            LOG(fatal)
+                << "Unsupported store profile <" << sli.store->profile << ">.";
+            return EXIT_FAILURE;
+        }
     }
 
     // run the encoder
