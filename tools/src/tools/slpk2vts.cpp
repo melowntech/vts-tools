@@ -327,7 +327,7 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
 
     {
         for (const auto item : tree.nodes) {
-            const auto &node(item.second);
+            const auto &node(item.second.node);
             if (!node.hasGeometry()) { continue; }
             if (node.children.empty()) {
                 // leaf
@@ -351,24 +351,24 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
     // accumulate mesh area (both 3D and 2D) in all nodes at common bottom depth
 
     // collect nodes for OpenMP
-    std::vector<const slpk::Node*> treeNodes;
+    std::vector<const slpk::TreeNode*> treeNodes;
     for (const auto &item : tree.nodes) {
-        const auto &node(item.second);
+        const auto &node(item.second.node);
         if ((node.level == lodInfo.commonBottom) && (node.hasGeometry())) {
-            treeNodes.push_back(&node);
+            treeNodes.push_back(&item.second);
         }
     }
 
     auto *pmim(&mim);
-    const auto *pnodes(&treeNodes);
 
-    UTILITY_OMP(parallel for shared(pmim) schedule(dynamic))
-    for (std::size_t i = 0; i < pnodes->size(); ++i) {
-        const auto &node(*(*pnodes)[i]);
+    UTILITY_OMP(parallel for shared(pmim, treeNodes) schedule(dynamic))
+    for (std::size_t i = 0; i < treeNodes.size(); ++i) {
+        const auto &treeNode(treeNodes[i]);
+        const auto &node(treeNode->node);
 
         // load geometry
         VtsMeshLoader loader;
-        archive.loadGeometry(loader, node);
+        archive.loadGeometry(loader, node, treeNode->sharedResource);
 
         // measure textures
         std::vector<math::Size2> sizes;
@@ -425,7 +425,7 @@ public:
     void run(vt::ExternalProgress &progress);
 
 private:
-    void cutNode(const slpk::Node &node, const tools::LodInfo &lodInfo);
+    void cutNode(const slpk::TreeNode &node, const tools::LodInfo &lodInfo);
 
     void splitToTiles(const slpk::Node &slpkNode
                       , const vts::NodeInfo &root
@@ -473,9 +473,9 @@ void Cutter::run(vt::ExternalProgress &progress)
 
     // convert node map to node (pointer) list (needed by OpenMP to iterate over
     // nodes)
-    auto nl([&]() -> std::vector<const slpk::Node*>
+    auto nl([&]() -> std::vector<const slpk::TreeNode*>
     {
-        std::vector<const slpk::Node*> nl;
+        std::vector<const slpk::TreeNode*> nl;
         nl.reserve(tree.nodes.size());
         for (const auto &item : tree.nodes) {
             nl.push_back(&item.second);
@@ -486,8 +486,8 @@ void Cutter::run(vt::ExternalProgress &progress)
     const std::size_t nlSize(nl.size());
     UTILITY_OMP(parallel for schedule(dynamic))
     for (std::size_t i = 0; i < nlSize; ++i) {
-        const auto &node(*nl[i]);
-        cutNode(node, lodInfo);
+        const auto &treeNode(*nl[i]);
+        cutNode(treeNode, lodInfo);
         ++progress;
     }
 }
@@ -506,10 +506,14 @@ cv::Mat Cutter::loadTexture(const slpk::Node &node, int index) const
     return tex;
 }
 
-void Cutter::cutNode(const slpk::Node &node, const tools::LodInfo &lodInfo)
+void Cutter::cutNode(const slpk::TreeNode &treeNode
+                     , const tools::LodInfo &lodInfo)
 {
+    const auto &node(treeNode.node);
+
     VtsMeshLoader loader;
-    archive_.loadGeometry(loader, node);
+    archive_.loadGeometry(loader, node, treeNode.sharedResource);
+
     vts::opencv::Atlas inAtlas;
     for (std::size_t i(0), e(loader.mesh().size()); i != e; ++i) {
         inAtlas.add(loadTexture(node, i));
