@@ -1,3 +1,9 @@
+vts-tools (1.86) stable; urgency=medium
+
+  * Better slpk2vts processing.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 11 Oct 2019 14:29:15 +0000
+
 vts-tools (1.85) stable; urgency=medium
 
   * Updated slpk2vts.
