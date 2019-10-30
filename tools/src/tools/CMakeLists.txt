@@ -18,6 +18,7 @@ buildsys_binary(tmptscp)
 add_executable(vef2vts ${vef2vts_SOURCES})
 target_link_libraries(vef2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2vts ${MODULE_DEFINITIONS})
+set_target_version(vef2vts ${vts-tools_VERSION})
 buildsys_binary(vef2vts)
 
 # ------------------------------------------------------------------------
@@ -35,6 +36,7 @@ set(lodtree2vts_SOURCES
 add_executable(lodtree2vts ${lodtree2vts_SOURCES})
 target_link_libraries(lodtree2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(lodtree2vts ${MODULE_DEFINITIONS})
+set_target_version(lodtree2vts ${vts-tools_VERSION})
 buildsys_binary(lodtree2vts)
 
 # ------------------------------------------------------------------------
@@ -47,6 +49,7 @@ set(slpk2vts_SOURCES
 add_executable(slpk2vts slpk2vts.cpp)
 target_link_libraries(slpk2vts ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(slpk2vts ${MODULE_DEFINITIONS})
+set_target_version(slpk2vts ${vts-tools_VERSION})
 buildsys_binary(slpk2vts)
 
 # ------------------------------------------------------------------------
@@ -59,6 +62,7 @@ set(vef2slpk_SOURCES
 add_executable(vef2slpk ${vef2slpk_SOURCES})
 target_link_libraries(vef2slpk ${MODULE_LIBRARIES})
 buildsys_target_compile_definitions(vef2slpk ${MODULE_DEFINITIONS})
+set_target_version(vef2slpk ${vts-tools_VERSION})
 buildsys_binary(vef2slpk)
 
 if (NOT BUILDSYS_LIMITED_CPP11)
@@ -72,6 +76,7 @@ if (NOT BUILDSYS_LIMITED_CPP11)
   add_executable(3dtiles2vts 3dtiles2vts.cpp)
   target_link_libraries(3dtiles2vts ${MODULE_LIBRARIES})
   buildsys_target_compile_definitions(3dtiles2vts ${MODULE_DEFINITIONS})
+set_target_version(3dtiles2vts ${vts-tools_VERSION})
   buildsys_binary(3dtiles2vts)
 endif()
 
