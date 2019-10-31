@@ -76,7 +76,7 @@ if (NOT BUILDSYS_LIMITED_CPP11)
   add_executable(3dtiles2vts 3dtiles2vts.cpp)
   target_link_libraries(3dtiles2vts ${MODULE_LIBRARIES})
   buildsys_target_compile_definitions(3dtiles2vts ${MODULE_DEFINITIONS})
-set_target_version(3dtiles2vts ${vts-tools_VERSION})
+  set_target_version(3dtiles2vts ${vts-tools_VERSION})
   buildsys_binary(3dtiles2vts)
 endif()
 
