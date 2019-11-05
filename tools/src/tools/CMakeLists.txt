@@ -78,6 +78,18 @@ if (NOT BUILDSYS_LIMITED_CPP11)
   buildsys_target_compile_definitions(3dtiles2vts ${MODULE_DEFINITIONS})
   set_target_version(3dtiles2vts ${vts-tools_VERSION})
   buildsys_binary(3dtiles2vts)
+
+  # vts23dtiles tool
+  define_module(BINARY vts23dtiles
+    DEPENDS ${common_DEPENDS} 3dtiles>=1.0)
+  set(vts23dtiles_SOURCES
+    vts23dtiles.cpp)
+
+  add_executable(vts23dtiles vts23dtiles.cpp)
+  target_link_libraries(vts23dtiles ${MODULE_LIBRARIES})
+  buildsys_target_compile_definitions(vts23dtiles ${MODULE_DEFINITIONS})
+  set_target_version(vts23dtiles ${vts-tools_VERSION})
+  buildsys_binary(vts23dtiles)
 endif()
 
 # ------------------------------------------------------------------------
