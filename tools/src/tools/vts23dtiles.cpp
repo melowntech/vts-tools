@@ -10,6 +10,7 @@
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts/io.hpp"
 #include "vts-libs/vts.hpp"
+#include "vts-libs/vts/csconvertor.hpp"
 
 #include "3dtiles/3dtiles.hpp"
 #include "3dtiles/encoder.hpp"
@@ -118,8 +119,8 @@ public:
               , const boost::optional<vts::LodTileRange> &range)
         : tdt::Encoder(config, root, makeValidTiles(its.tileIndex(), range))
         , its_(its)
-    {
-    }
+        , conv_(its.referenceFrame().model.physicalSrs, config.srs)
+    {}
 
 private:
     static vts::TileIndex
@@ -154,8 +155,18 @@ private:
         UTILITY_OVERRIDE;
 
     const vts::TileSet &its_;
+    const vts::CsConvertor conv_;
 };
 
+inline void warpInPlace(vts::SubMesh &mesh, const vts::CsConvertor &conv)
+{
+    for (auto &v : mesh.vertices) { v = conv(v); }
+}
+
+inline void warpInPlace(vts::Mesh &mesh, const vts::CsConvertor &conv)
+{
+    for (auto &sm : mesh) { warpInPlace(sm, conv); }
+}
 
 tdt::Encoder::TexturedMesh Generator::generate(const vts::TileId &tileId)
 {
@@ -169,6 +180,8 @@ tdt::Encoder::TexturedMesh Generator::generate(const vts::TileId &tileId)
         *content.mesh = its_.getMesh(tileId);
         its_.getAtlas(tileId, atlas);
     }
+
+    warpInPlace(*content.mesh, conv_);
 
     return content;
 }
