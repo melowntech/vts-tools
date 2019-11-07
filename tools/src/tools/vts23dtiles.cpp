@@ -148,7 +148,7 @@ private:
             return o & n;
         });
 
-        return ti.combine(clipTi, combiner, lr);
+        return ti.combine(clipTi, combiner, ti.lodRange());
     }
 
     virtual TexturedMesh generate(const vts::TileId &tileId)
