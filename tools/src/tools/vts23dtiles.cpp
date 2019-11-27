@@ -140,6 +140,8 @@ private:
         for (const auto &r : vts::Ranges(lr, range->range).ranges()) {
             clipTi.set(r.lod, r.range, TF::mesh);
         }
+        // add empty LODS above lr.max to make combine work
+        clipTi.makeAbsolute();
 
         const auto &combiner([&](TF::value_type o, TF::value_type n)
                              -> TF::value_type
