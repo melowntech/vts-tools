@@ -1,3 +1,9 @@
+vts-tools (1.87) stable; urgency=medium
+
+  * Added vts23dtiles tool
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 27 Nov 2019 19:08:28 +0100
+
 vts-tools (1.86) stable; urgency=medium
 
   * Better slpk2vts processing.
