@@ -94,5 +94,5 @@ endif()
 
 # ------------------------------------------------------------------------
 # installation
-install(TARGETS vef2vts lodtree2vts slpk2vts vef2slpk 3dtiles2vts
+install(TARGETS vef2vts lodtree2vts slpk2vts vef2slpk 3dtiles2vts vts23dtiles
   RUNTIME DESTINATION bin COMPONENT vts-tools)
