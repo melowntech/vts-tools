@@ -1,3 +1,9 @@
+vts-tools (1.89) stable; urgency=medium
+
+  * Fixed gap in merging tiles with cookie cutters.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 29 Jan 2020 17:32:20 +0100
+
 vts-tools (1.88) stable; urgency=medium
 
   * Installing forgotten vts23dtiles. 
