@@ -1,3 +1,9 @@
+vts-tools (1.90) stable; urgency=medium
+
+  * Fixed glue ordering.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 05 May 2020 15:23:41 +0200
+
 vts-tools (1.89) stable; urgency=medium
 
   * Fixed gap in merging tiles with cookie cutters.
