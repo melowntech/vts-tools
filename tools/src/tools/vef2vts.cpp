@@ -56,6 +56,7 @@
 
 #include "imgproc/scanconversion.hpp"
 #include "imgproc/jpeg.hpp"
+#include "imgproc/cvcompat.hpp"
 
 #include "geometry/parse-obj.hpp"
 #include "geometry/polygon.hpp"
@@ -939,7 +940,7 @@ cv::Mat Cutter::loadTexture(const fs::path &path) const
     }
 
     auto is(archive.istream(path));
-    auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
+    auto tex(cv::imdecode(is->read(), IMGPROC_IMREAD(COLOR)));
 
     if (!tex.data) {
         LOGTHROW(err2, std::runtime_error)

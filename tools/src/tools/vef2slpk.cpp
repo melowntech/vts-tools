@@ -299,7 +299,7 @@ Setup makeSetup(const Config &config, const vef::Archive &archive)
 
     Setup setup;
     setup.srcSrs = tiling.srcSrs;
-    setup.workExtents = tiling.workExtents;
+    setup.workExtents = math::extents2(tiling.workExtents);
     setup.workSrs = tiling.workSrs;
     setup.maxLod = tiling.maxLod;
     setup.dstSrs = config.spatialReference.srs();

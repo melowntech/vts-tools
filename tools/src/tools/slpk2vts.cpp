@@ -38,6 +38,8 @@
 
 #include "geometry/meshop.hpp"
 
+#include "imgproc/cvcompat.hpp"
+
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts.hpp"
 #include "vts-libs/vts/encoder.hpp"
@@ -496,7 +498,7 @@ cv::Mat Cutter::loadTexture(const slpk::Node &node, int index) const
 {
     const auto is(archive_.texture(node, index));
     LOG(info1) << "Loading texture from " << is->path() << ".";
-    auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
+    auto tex(cv::imdecode(is->read(), IMGPROC_IMREAD(COLOR)));
 
     if (!tex.data) {
         LOGTHROW(err2, std::runtime_error)

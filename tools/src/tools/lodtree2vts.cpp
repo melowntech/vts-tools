@@ -48,6 +48,7 @@
 #include "service/verbosity.hpp"
 
 #include "imgproc/imagesize.hpp"
+#include "imgproc/cvcompat.hpp"
 
 #include "roarchive/roarchive.hpp"
 #include "lodtree/lodtreefile.hpp"
@@ -450,7 +451,7 @@ void Cutter::cutNode(const lodtree::Node &node, const tools::LodInfo &lodInfo)
         // load textures
         for (const auto &is : ts) {
             LOG(info1) << "Loading texture from " << is->path() << ".";
-            auto tex(cv::imdecode(is->read(), CV_LOAD_IMAGE_COLOR));
+            auto tex(cv::imdecode(is->read(), IMGPROC_IMREAD(COLOR)));
             inAtlas.add(tex);
         }
     }

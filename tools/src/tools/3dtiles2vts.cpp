@@ -40,6 +40,7 @@
 #include "geometry/meshop.hpp"
 
 #include "imgproc/imagesize.hpp"
+#include "imgproc/cvcompat.hpp"
 
 #include "vts-libs/registry/po.hpp"
 #include "vts-libs/vts.hpp"
@@ -297,7 +298,7 @@ void addImage(vts::opencv::Atlas &atlas, const gltf::DataView &data
               , const std::string &filename)
 {
     std::vector<std::uint8_t> d(data.first, data.second);
-    auto image(cv::imdecode(d, CV_LOAD_IMAGE_COLOR));
+    auto image(cv::imdecode(d, IMGPROC_IMREAD(COLOR)));
     if (!image.data) {
         LOGTHROW(err2, vs::FormatError)
             << "Cannot decode texture image from <" << filename << ">.";
