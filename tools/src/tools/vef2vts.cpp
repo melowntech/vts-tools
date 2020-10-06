@@ -108,6 +108,8 @@ struct Config : tools::TmpTsEncoder::Config {
 
     double zShift;
 
+    bool debug_nothreads;
+
     Config()
         : optimalTextureSize(256, 256)
         , ntLodPixelSize(1.0)
@@ -115,6 +117,7 @@ struct Config : tools::TmpTsEncoder::Config {
         , borderClipMargin(clipMargin)
         , sigmaEditCoef(1.5)
         , zShift(0.0)
+        , debug_nothreads(false)
     {}
 
     void configuration(po::options_description &config) {
@@ -171,6 +174,11 @@ struct Config : tools::TmpTsEncoder::Config {
              ->default_value(zShift)->required()
              , "Manual height adjustment (value is "
              "added to z component of all vertices).")
+
+            ("debug.nothreads", po::value(&debug_nothreads)
+             ->default_value(false)->implicit_value(true)
+             , "Disable threading for debugging purposes. Applies only to "
+             "tileset encoding so far.")
             ;
     }
 
@@ -864,6 +872,8 @@ Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
             optimalTileArea = area(config_.optimalTextureSize) * texelArea;
         }
 
+        if (optimalTileArea <= 0.0) { continue; }
+
         const auto optimalTileCount(node.extents().area()
                                     / optimalTileArea);
         auto bestLod(0.5 * std::log2(optimalTileCount));
@@ -1232,7 +1242,7 @@ int Vef2Vts::run()
 
     // run the encoder
     Encoder(output_, properties, createMode_, input, config_
-            , std::move(epConfig_)).run();
+            , std::move(epConfig_)).run(!config_.debug_nothreads);
 
     // all done
     LOG(info4) << "All done.";
