@@ -1,3 +1,9 @@
+vts-tools (1.91) stable; urgency=medium
+
+  * vef2vts: fixed LOD assignment
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 06 Oct 2020 15:33:24 +0200
+
 vts-tools (1.90) stable; urgency=medium
 
   * Fixed glue ordering.
