@@ -597,6 +597,14 @@ NavtileInfo computeNavtileInfo(const vts::NodeInfo &node
     // 3. find nt lod by nt lod pixelsize
     const auto nodeId(node.nodeId());
 
+    // fix min applicable lod to tileExtents lod if set
+    if (config.tileExtents) {
+        const auto &te(*config.tileExtents);
+        if (lr.min < te.lod) {
+            lr.min = te.lod;
+        }
+    }
+
     // nt lod
     vts::Lod ntLod(lr.max);
 
