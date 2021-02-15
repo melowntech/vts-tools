@@ -1,3 +1,9 @@
+vts-tools (1.92) stable; urgency=medium
+
+  * vef2vts: fixed mesh cleanup
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Mon, 25 Jan 2021 20:17:18 +0100
+
 vts-tools (1.91) stable; urgency=medium
 
   * vef2vts: fixed LOD assignment
