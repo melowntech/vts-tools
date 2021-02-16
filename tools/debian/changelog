@@ -1,3 +1,10 @@
+vts-tools (1.93) stable; urgency=medium
+
+  * slpk: fixed SRS handling
+  * vts/merge: fixed instability in convertor instantiation
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 16 Feb 2021 12:39:31 +0100
+
 vts-tools (1.92) stable; urgency=medium
 
   * vef2vts: fixed mesh cleanup
