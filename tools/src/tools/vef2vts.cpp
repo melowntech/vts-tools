@@ -272,10 +272,17 @@ usage
     return false;
 }
 
+math::Point3 optionalTransform(const vef::OptionalMatrix &trafo
+                                     , const math::Point3 &p)
+{
+    if (!trafo) { return p; }
+    return math::transform(*trafo, p);
+}
+
 class ObjLoader : public geometry::ObjParserBase {
 public:
-    ObjLoader()
-        : textureId_(0), vMap_(), tcMap_()
+    ObjLoader(const vef::OptionalMatrix trafo)
+        : textureId_(0), vMap_(), tcMap_(), trafo_(trafo)
     {
         // make sure we have at least one valid material
         useMaterial(0);
@@ -288,7 +295,9 @@ private:
     typedef std::vector<VertexMap> VertexMaps;
 
     virtual void addVertex(const Vector3d &v) {
-        vertices_.emplace_back(v.x, v.y, v.z);
+
+        vertices_.emplace_back(
+            optionalTransform(trafo_, math::Point3(v.x, v.y, v.z)));
     }
 
     virtual void addTexture(const Vector3d &t) {
@@ -357,6 +366,7 @@ private:
 
     VertexMap *vMap_;
     VertexMap *tcMap_;
+    vef::OptionalMatrix trafo_;
 };
 
 bool loadGzippedObj(ObjLoader &loader, const roarchive::RoArchive &archive
@@ -681,7 +691,8 @@ public:
                     const auto assignment
                         (assign(*manifest.srs, archive
                                 , loddedWindow.lods.front()
-                                , loddedWindow.lods.size() - 1));
+                                , loddedWindow.lods.size() - 1
+                                , vef::windowMatrix(manifest, loddedWindow)));
                     // store
                     assignments[assignmentsStart + i] = assignment;
                 }
@@ -711,7 +722,8 @@ private:
     void analyze(Assignment::maplist &assignments);
     Assignment::map assign(const geo::SrsDefinition &inputSrs
                            , const vef::Archive &archive
-                           , const vef::Window &window, std::size_t lodCount);
+                           , const vef::Window &window, std::size_t lodCount
+                           , const vef::OptionalMatrix trafo);
 
     const vr::ReferenceFrame &rf_;
     const Config &config_;
@@ -749,10 +761,11 @@ void Analyzer::analyze(Assignment::maplist &assignments)
 Assignment::map Analyzer::assign(const geo::SrsDefinition &inputSrs
                                  , const vef::Archive &archive
                                  , const vef::Window &window
-                                 , std::size_t lodCount)
+                                 , std::size_t lodCount
+                                 , const vef::OptionalMatrix trafo)
 {
     // load mesh
-    ObjLoader loader;
+    ObjLoader loader(trafo);
 
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
     if (!loadObj(loader, archive.archive(), window)) {
@@ -921,7 +934,8 @@ private:
     void cut(const Assignment::maplist &assignments);
 
     void windowCut(const vef::Window &window, vts::Lod lodDiff
-                   , const Assignment::map &assignemnts);
+                   , const Assignment::map &assignemnts
+                   , const vef::OptionalMatrix trafo);
 
     void splitToTiles(const vts::NodeInfo &root
                       , vts::Lod lod, const vts::TileRange &tr
@@ -981,7 +995,8 @@ void Cutter::cut(const Assignment::maplist &assignments)
 
             std::size_t loddedWindowSize(loddedWindow.lods.size());
             for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
-                windowCut(loddedWindow.lods[ii], ii, assignment);
+                windowCut( loddedWindow.lods[ii], ii, assignment
+                         , vef::windowMatrix(manifest_, loddedWindow));
                 ++progress_;
             }
         }
@@ -989,10 +1004,11 @@ void Cutter::cut(const Assignment::maplist &assignments)
 
 
 void Cutter::windowCut(const vef::Window &window, vts::Lod lodDiff
-                       , const Assignment::map &assignemnts)
+                       , const Assignment::map &assignemnts
+                       , const vef::OptionalMatrix trafo)
 {
     // load mesh
-    ObjLoader loader;
+    ObjLoader loader(trafo);
     LOG(info3) << "Loading window mesh from: " << window.mesh.path;
     if (!loadObj(loader, archive_.archive(), window)) {
         LOGTHROW(err2, std::runtime_error)
