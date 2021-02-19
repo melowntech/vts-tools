@@ -1,3 +1,9 @@
+vts-tools (1.94) stable; urgency=medium
+
+  * vef2vts: correctly handles manifest trafos.
+
+ -- Ladislav Horky <ladislav.horky@citationtech.net>  Fri, 19 Feb 2021 17:45:01 +0100
+
 vts-tools (1.93) stable; urgency=medium
 
   * slpk: fixed SRS handling
