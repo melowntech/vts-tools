@@ -101,6 +101,7 @@ struct Config : tools::TmpTsEncoder::Config {
     double ntLodPixelSize;
 
     boost::optional<vts::LodTileRange> tileExtents;
+    int lodDepth = 0;
     double clipMargin;
     double borderClipMargin;
     double sigmaEditCoef;
@@ -149,6 +150,10 @@ struct Config : tools::TmpTsEncoder::Config {
              "When set, only tiles in that range and below are added to "
              "the output.")
 
+            ("lodDepth", po::value(&lodDepth)->default_value(lodDepth)
+             , "Limit output only to given depth from bottom (>0)"
+             "or top (<0). 0 means no depth limit.")
+
             ("borderClipMargin", po::value(&borderClipMargin)
              , "Margin (in fraction of tile dimensions) added to tile extents "
              "where tile touches artificial border definied by tileExtents.")
@@ -187,10 +192,21 @@ struct Config : tools::TmpTsEncoder::Config {
 
         if (vars.count("tileExtents")) {
             tileExtents = vars["tileExtents"].as<vts::LodTileRange>();
+
+            LOG(info3) << "Limiting output to tile extents "
+                       << tileExtents << ".";
         }
 
         if (vars.count("tweak.nominalResolution")) {
             nominalResolution = vars["tweak.nominalResolution"].as<double>();
+        }
+
+        if (lodDepth > 0) {
+            LOG(info3) << "Limiting output to first "
+                       << lodDepth << " LODs.";
+        } else if (lodDepth < 0) {
+            LOG(info3) << "Limiting output to last "
+                       << -lodDepth << " LODs.";
         }
     }
 };
@@ -991,10 +1007,26 @@ void Cutter::cut(const Assignment::maplist &assignments)
 
             dbglog::thread_id(loddedWindow.path.filename().string());
 
-            LOG(info3) << "Processing window LODs from: " << loddedWindow.path;
+            LOG(info3) << "Processing window LODs from: " << loddedWindow.path
+                       << " (" << loddedWindow.lods.size() << " LODs).";
 
-            std::size_t loddedWindowSize(loddedWindow.lods.size());
-            for (std::size_t ii = 0; ii < loddedWindowSize; ++ii) {
+            // start/end lods, defaults to whole datase
+            std::size_t bLod(0);
+            std::size_t eLod(loddedWindow.lods.size());
+
+            // apply lod depth
+            if (config_.lodDepth > 0) {
+                // >0 -> only first lodDepth lods
+                eLod = std::min(std::size_t(config_.lodDepth), eLod);
+            } else if (config_.lodDepth < 0) {
+                // <0 -> only last lodDepth lods
+                const std::size_t lodDepth(-config_.lodDepth);
+                if (lodDepth < eLod) {
+                    bLod = eLod - lodDepth;
+                }
+            }
+
+            for (std::size_t ii = bLod; ii < eLod; ++ii) {
                 windowCut( loddedWindow.lods[ii], ii, assignment
                          , vef::windowMatrix(manifest_, loddedWindow));
                 ++progress_;
