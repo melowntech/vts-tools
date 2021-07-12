@@ -1,3 +1,10 @@
+vts-tools (1.96) stable; urgency=medium
+
+  * Properly handling external (per-proxy) URL in storage; works even
+    with remote tilesets.
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Mon, 12 Jul 2021 16:07:37 +0200
+
 vts-tools (1.95) stable; urgency=medium
 
   * meta/v5: using new version of metatiles (complete geom extents)
