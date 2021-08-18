@@ -109,6 +109,8 @@ struct Config : tools::TmpTsEncoder::Config {
 
     double zShift;
 
+    unsigned int revision = 0;
+
     bool debug_nothreads;
 
     Config()
@@ -179,6 +181,10 @@ struct Config : tools::TmpTsEncoder::Config {
              ->default_value(zShift)->required()
              , "Manual height adjustment (value is "
              "added to z component of all vertices).")
+
+            ("revision", po::value(&revision)->default_value(revision)
+             , "Minimum tileset revision. Actual revision might be greater "
+             "if there already was an existing tileset at given output path.")
 
             ("debug.nothreads", po::value(&debug_nothreads)
              ->default_value(false)->implicit_value(true)
@@ -1257,7 +1263,9 @@ public:
             , vt::ExternalProgress::Config &&epConfig)
         : tools::TmpTsEncoder(path, properties, mode
                               , config, std::move(epConfig)
-                              , (config.resume ? weightsResume : weightsFull))
+                              , (config.resume ? weightsResume : weightsFull)
+                              , vts::Encoder::Options()
+                              .ensureRevision(config.revision))
         , config_(config)
     {
         if (config.resume) { return; }
