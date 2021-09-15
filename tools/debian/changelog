@@ -1,3 +1,9 @@
+vts-tools (1.97) stable; urgency=medium
+
+  * Fixed NodeInfo validity check when compiled on GDAL3
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 15 Sep 2021 15:48:32 +0200
+
 vts-tools (1.96) stable; urgency=medium
 
   * Properly handling external (per-proxy) URL in storage; works even
