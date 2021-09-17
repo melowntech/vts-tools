@@ -243,7 +243,6 @@ struct Setup {
     geo::SrsDefinition srcSrs;
     geo::SrsDefinition workSrs;
     geo::SrsDefinition dstSrs;
-    geo::CsConvertor src2work;
     geo::CsConvertor work2dst;
     vts::Lod maxLod;
 
@@ -253,7 +252,15 @@ struct Setup {
 
     void configuration(const std::string&, po::options_description &od);
     void configure(const std::string&, po::variables_map) {}
+
+    boost::optional<geo::SrsDefinition> cutSrs() const;
 };
+
+boost::optional<geo::SrsDefinition> Setup::cutSrs() const
+{
+    if (geo::areSame(srcSrs, workSrs)) { return boost::none; }
+    return workSrs;
+}
 
 void Setup::save(std::ostream &os) const
 {
@@ -304,9 +311,6 @@ Setup makeSetup(const Config &config, const vef::Archive &archive)
     setup.maxLod = tiling.maxLod;
     setup.dstSrs = config.spatialReference.srs();
 
-    if (!setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
-        setup.src2work = geo::CsConvertor(setup.srcSrs, setup.workSrs);
-    }
     setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
     return setup;
 }
@@ -316,9 +320,6 @@ Setup readSetup(const fs::path &file)
     Setup setup;
     utility::readConfig(file, setup);
 
-    if (!setup.srcSrs.is(geo::SrsDefinition::Type::enu)) {
-        setup.src2work = geo::CsConvertor(setup.srcSrs, setup.workSrs);
-    }
     setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
     return setup;
 }
@@ -860,7 +861,7 @@ int Vef2Slpk::run()
 
         // cu to tiles
         vef::cutToTiles(ts, input, setup.workExtents
-                        , setup.src2work
+                        , setup.cutSrs()
                         , setup.maxLod, config_.clipMargin);
 
         // save setup

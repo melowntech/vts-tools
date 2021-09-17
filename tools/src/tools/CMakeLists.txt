@@ -6,7 +6,7 @@ set(common_DEPENDS
 # ------------------------------------------------------------------------
 # vef2vts tool
 define_module(BINARY vef2vts
-  DEPENDS ${common_DEPENDS} vef>=1.2)
+  DEPENDS ${common_DEPENDS} vef>=1.6)
 set(vef2vts_SOURCES
   vef2vts.cpp)
 
@@ -55,7 +55,7 @@ buildsys_binary(slpk2vts)
 # ------------------------------------------------------------------------
 # vef2slpk tool
 define_module(BINARY vef2slpk
-  DEPENDS ${common_DEPENDS} vef>=1.2 slpk>=1.2)
+  DEPENDS ${common_DEPENDS} vef>=1.6 slpk>=1.2)
 set(vef2slpk_SOURCES
   vef2slpk.cpp)
 
