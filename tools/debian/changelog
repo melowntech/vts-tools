@@ -1,4 +1,4 @@
-vts-tools (1.97) stable; urgency=medium
+vts-tools (1.98) stable; urgency=medium
 
   * Fixed NodeInfo validity check when compiled on GDAL3
 
