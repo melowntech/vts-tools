@@ -1,3 +1,10 @@
+vts-tools (1.99) stable; urgency=medium
+
+  * Tmptsnecoder: added --tweak.binaryOrder option to tune underlying
+    termporary tileset archive size
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Mon, 22 Nov 2021 12:46:13 +0100
+
 vts-tools (1.98) stable; urgency=medium
 
   * Fixed NodeInfo validity check when compiled on GDAL3
