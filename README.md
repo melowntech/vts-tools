@@ -43,7 +43,7 @@ libraries) [OpenMesh](https://www.openmesh.org/). You have to download and
 install OpenMesh library and this is, how you do it
 
 ```
-git clone https://www.graphics.rwth-aachen.de:9000/OpenMesh/OpenMesh.git
+git clone --recursive https://www.graphics.rwth-aachen.de:9000/OpenMesh/OpenMesh.git
 cd OpenMesh
 mkdir build
 cd build
