@@ -80,7 +80,9 @@ sudo apt-get install \
     libopencv-dev libopencv-core-dev libopencv-highgui-dev \
     libopencv-photo-dev libopencv-imgproc-dev libeigen3-dev libgdal-dev \
     libproj-dev libgeographic-dev libjsoncpp-dev \
-    libprotobuf-dev protobuf-compiler libprocps-dev libmagic-dev gawk sqlite3
+    libprotobuf-dev protobuf-compiler libprocps-dev libmagic-dev gawk sqlite3 \
+    libassimp-dev \
+    libtinyxml2-dev
 ```
 
 ### Clone and Download
