@@ -97,10 +97,72 @@ namespace tools = vtslibs::vts::tools;
 
 namespace {
 
+struct SrsOverride {
+    enum class Source {
+        default_
+        , input
+        , custom
+    };
+
+    std::string name;
+
+    Source source = Source::default_;
+    boost::optional<geo::SrsDefinition> srs;
+
+    SrsOverride(const std::string &name) : name(name) {}
+
+    void configuration(po::options_description &config);
+
+    void configure(const po::variables_map &vars);
+
+    std::ostream& dump(std::ostream &os, const std::string &prefix = {}) const;
+};
+
+void SrsOverride::configuration(po::options_description &config)
+{
+    config.add_options()
+        (name.c_str(), po::value<std::string>()
+         , "SRS override. Leave unset to use default handling, "
+         "set to actual SRS to provide custom SRS and "
+         "use special value \"input\" to use input SRS "
+         "from VEF.");
+}
+
+void SrsOverride::configure(const po::variables_map &vars)
+{
+    if (!vars.count(name)) {
+        source = Source::default_;
+        srs = boost::none;
+        return;
+    }
+
+    const auto &value(vars[name].as<std::string>());
+    if (value == "input") {
+        source = Source::input;
+        srs = boost::none;
+    } else {
+        source = Source::custom;
+        srs = value;
+    }
+}
+
+std::ostream& SrsOverride::dump(std::ostream &os, const std::string &prefix)
+    const
+{
+    os << prefix << name << " = " ;
+
+    switch (source) {
+    case Source::default_: os << "default"; break;
+    case Source::input: os << "input"; break;
+    case Source::custom: os << *srs; break;
+    }
+
+    return os;
+}
+
 struct Config {
     int textureQuality;
     math::Size2 optimalTextureSize;
-    slpk::SpatialReference spatialReference;
     std::string layerName;
     boost::optional<std::string> alias;
     boost::optional<std::string> copyrightText;
@@ -110,6 +172,9 @@ struct Config {
     double clipMargin;
     bool resume;
     bool keepTmpset;
+
+    SrsOverride workSrs = SrsOverride("workSrs");
+    SrsOverride dstSrs = SrsOverride("dstSrs");
 
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
@@ -131,18 +196,15 @@ public:
     {}
 
 private:
-    virtual void configuration(po::options_description &cmdline
-                               , po::options_description &config
-                               , po::positional_options_description &pd)
-        UTILITY_OVERRIDE;
+    void configuration(po::options_description &cmdline
+                       , po::options_description &config
+                       , po::positional_options_description &pd) override;
 
-    virtual void configure(const po::variables_map &vars)
-        UTILITY_OVERRIDE;
+    void configure(const po::variables_map &vars) override;
 
-    virtual bool help(std::ostream &out, const std::string &what) const
-        UTILITY_OVERRIDE;
+    bool help(std::ostream &out, const std::string &what) const override;
 
-    virtual int run() UTILITY_OVERRIDE;
+    int run() override;
 
     fs::path input_;
     fs::path output_;
@@ -166,8 +228,6 @@ void Vef2Slpk::configuration(po::options_description &cmdline
         ("textureQuality", po::value(&config_.textureQuality)
          ->default_value(config_.textureQuality)->required()
          , "Texture quality for JPEG texture encoding (0-100).")
-
-        // TODO: spatial reference
 
         ("clipMargin", po::value(&config_.clipMargin)
          ->default_value(config_.clipMargin)
@@ -199,8 +259,10 @@ void Vef2Slpk::configuration(po::options_description &cmdline
 
         ("copyrightText", po::value<std::string>()
          , "Optional copyright text for generated SLPK layer.")
-
         ;
+
+    config_.workSrs.configuration(cmdline);
+    config_.dstSrs.configuration(cmdline);
 
     vt::progressConfiguration(config);
 
@@ -224,6 +286,15 @@ void Vef2Slpk::configure(const po::variables_map &vars)
     if (vars.count("copyrightText")) {
         config_.copyrightText = vars["copyrightText"].as<std::string>();
     }
+
+    config_.workSrs.configure(vars);
+    config_.dstSrs.configure(vars);
+
+    LOG(info3)
+        << "Configuration:\n"
+        << utility::dump(config_.workSrs, "\t") << "\n"
+        << utility::dump(config_.dstSrs, "\t") << "\n"
+        ;
 }
 
 bool Vef2Slpk::help(std::ostream &out, const std::string &what) const
@@ -239,6 +310,7 @@ usage
 }
 
 struct Setup {
+    slpk::SpatialReference spatialReference;
     math::Extents2 workExtents;
     geo::SrsDefinition srcSrs;
     geo::SrsDefinition workSrs;
@@ -264,6 +336,7 @@ boost::optional<geo::SrsDefinition> Setup::cutSrs() const
 
 void Setup::save(std::ostream &os) const
 {
+    // TODO: save spatialReference
     os << std::fixed << std::setprecision(15)
        << "workExtents = " << workExtents
        << "\nsrcSrs = " << srcSrs
@@ -276,6 +349,7 @@ void Setup::save(std::ostream &os) const
 
 void Setup::configuration(const std::string&, po::options_description &od)
 {
+    // TODO: load spatialReference
     od.add_options()
         ("workExtents", po::value(&workExtents), "workExtents")
         ("srcSrs", po::value(&srcSrs), "srcSrs")
@@ -300,16 +374,57 @@ void writeSetup(const fs::path &file, const Setup &setup)
     fs::rename(tmp, file);
 }
 
-Setup makeSetup(const Config &config, const vef::Archive &archive)
+vef::Tiling makeTiling(const Config &config, const vef::Archive &archive)
 {
-    vef::Tiling tiling(archive, config.optimalTextureSize);
+    switch (config.workSrs.source) {
+    case SrsOverride::Source::default_:
+        return vef::Tiling(archive, config.optimalTextureSize);
+
+    case SrsOverride::Source::input:
+        return vef::Tiling
+            (archive, config.optimalTextureSize
+             , false, boost::none
+             , vef::World(archive.manifest().srs.value()
+                          , math::Extents3(math::InvalidExtents{})));
+
+    case SrsOverride::Source::custom:
+        return vef::Tiling
+            (archive, config.optimalTextureSize
+             , false, boost::none
+             , vef::World(config.workSrs.srs.value()
+                          , math::Extents3(math::InvalidExtents{})));
+    }
+
+    throw; // never reached
+}
+
+Setup makeSetup(Config &config, const vef::Archive &archive)
+{
+    auto tiling(makeTiling(config, archive));
 
     Setup setup;
     setup.srcSrs = archive.manifest().srs.value();
     setup.workExtents = math::extents2(tiling.workExtents);
     setup.workSrs = tiling.workSrs;
     setup.maxLod = tiling.maxLod;
-    setup.dstSrs = config.spatialReference.srs();
+
+    // set output SRS
+    switch (config.dstSrs.source) {
+    case SrsOverride::Source::default_:
+        setup.spatialReference = {};
+        break;
+
+    case SrsOverride::Source::input:
+        setup.spatialReference.setSrs(setup.srcSrs);
+        break;
+
+    case SrsOverride::Source::custom:
+        setup.spatialReference.setSrs(config.dstSrs.srs.value());
+        break;
+
+    }
+
+    setup.dstSrs = setup.spatialReference.srs();
 
     setup.work2dst = geo::CsConvertor(setup.workSrs, setup.dstSrs);
     return setup;
@@ -448,14 +563,15 @@ std::string generateUuid() {
                      <boost::mt19937>(&ran)());
 }
 
-slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config)
+slpk::SceneLayerInfo makeSceneLayerInfo(const Config &config
+                                        , const Setup &setup)
 {
     slpk::SceneLayerInfo sli;
 
     sli.id = 0;
     sli.href = "layers/0";
     sli.layerType = slpk::LayerType::integratedMesh;
-    sli.spatialReference = config.spatialReference;
+    sli.spatialReference = setup.spatialReference;
 
     // spatialReference -> sli.heightModelInfo
     sli.heightModelInfo = slpk::HeightModelInfo(sli.spatialReference.srs());
@@ -835,8 +951,7 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
 
 int Vef2Slpk::run()
 {
-    // output file
-    slpk::Writer writer(output_, {}, makeSceneLayerInfo(config_), overwrite_);
+    // TODO: check output existence
 
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
     tools::TmpTileset ts(tmpTilesetPath, !config_.resume);
@@ -872,6 +987,10 @@ int Vef2Slpk::run()
         setup = readSetup(tmpTilesetPath / "setup.conf");
         // TODO: check for the same SRS etc.
     }
+
+    // output file
+    slpk::Writer writer(output_, {}, makeSceneLayerInfo(config_, setup)
+                        , overwrite_);
 
     Generator(writer, ts, config_, setup)(/* progress */);
 
