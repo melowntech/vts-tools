@@ -317,6 +317,7 @@ struct Setup {
     geo::SrsDefinition dstSrs;
     geo::CsConvertor work2dst;
     vts::Lod maxLod;
+    double resolution;
 
     Setup() : maxLod() {}
 
@@ -343,6 +344,7 @@ void Setup::save(std::ostream &os) const
        << "\nworkSrs = " << workSrs
        << "\ndstSrs = " << dstSrs
        << "\nmaxLod = " << maxLod
+       << "\nresolution = " << resolution
        << "\n"
         ;
 }
@@ -356,6 +358,7 @@ void Setup::configuration(const std::string&, po::options_description &od)
         ("workSrs", po::value(&workSrs), "workSrs")
         ("dstSrs", po::value(&dstSrs), "dstSrs")
         ("maxLod", po::value(&maxLod), "maxLod")
+        ("resolution", po::value(&resolution), "resolution")
         ;
 }
 
@@ -407,6 +410,7 @@ Setup makeSetup(Config &config, const vef::Archive &archive)
     setup.workExtents = math::extents2(tiling.workExtents);
     setup.workSrs = tiling.workSrs;
     setup.maxLod = tiling.maxLod;
+    setup.resolution = tiling.resolution;
 
     // set output SRS
     switch (config.dstSrs.source) {
@@ -501,7 +505,8 @@ public:
     slpk::MinimumBoundingSphere srcMbs;
     slpk::SharedResource sharedResource;
 
-    NodeHolder(const NodeId &nodeId)
+    NodeHolder(const vts::TileId &tileId, const NodeId &nodeId)
+        : tileId_(tileId)
     {
         node.id = asString(nodeId);
     }
@@ -538,6 +543,14 @@ public:
             child->node.parentNode = reference;
             node.children.push_back(child->reference);
         }
+
+        // LOD selection
+        {
+            node.lodSelection.emplace_back();
+            auto &ls(node.lodSelection.back());
+            ls.metricType = slpk::MetricType::maxScreenThreshold;
+            ls.maxError = scale(setup) * setup.resolution;
+        }
     }
 
     void write(slpk::Writer &writer) {
@@ -551,6 +564,18 @@ public:
     }
 
 private:
+    const vts::TileId tileId_;
+
+    bool bottom(const Setup &setup) const {
+        if (tileId_.lod >= setup.maxLod) { return setup.maxLod; }
+        return tileId_.lod;
+    }
+
+    double scale(const Setup &setup) const {
+        if (bottom(setup)) { return 1.0; }
+        return 1 << (setup.maxLod - tileId_.lod - 1);
+    }
+
     list children_;
 };
 
@@ -830,7 +855,7 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId)
 
     TIDGuard tg(str(boost::format("tile:%s") % tileId));
 
-    auto node(std::make_shared<NodeHolder>(nodeId));
+    auto node(std::make_shared<NodeHolder>(tileId, nodeId));
     auto &nodeReference(node->reference);
 
     if (ti_.get(tileId)) {
@@ -890,12 +915,6 @@ Generator::process(const vts::TileId &tileId, NodeId nodeId)
         const auto meshExtents(measureMesh(*mesh));
         UTILITY_OMP(critical(vef2slpk_process_2))
             math::update(sceneExtents_, meshExtents);
-
-        // LOD selection
-        {
-            n.lodSelection.emplace_back();
-            n.lodSelection.back().maxError = 500.0; // ???
-        }
 
         // write mesh and atlas
         write(writer_, n, sr, *mesh, *atlas);
