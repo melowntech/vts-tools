@@ -533,6 +533,14 @@ public:
             reference.mbs = node.mbs = mbs;
         }
 
+        // LOD selection
+        {
+            node.lodSelection.emplace_back();
+            auto &ls(node.lodSelection.back());
+            ls.metricType = slpk::MetricType::maxScreenThreshold;
+            ls.maxError = reference.mbs.r / (scale(setup) * setup.resolution);
+        }
+
         // cross-reference children (N^2)
         for (auto &child : children_) {
             for (auto &other : children_) {
@@ -542,14 +550,6 @@ public:
             }
             child->node.parentNode = reference;
             node.children.push_back(child->reference);
-        }
-
-        // LOD selection
-        {
-            node.lodSelection.emplace_back();
-            auto &ls(node.lodSelection.back());
-            ls.metricType = slpk::MetricType::maxScreenThreshold;
-            ls.maxError = scale(setup) * setup.resolution;
         }
     }
 
@@ -567,13 +567,12 @@ private:
     const vts::TileId tileId_;
 
     bool bottom(const Setup &setup) const {
-        if (tileId_.lod >= setup.maxLod) { return setup.maxLod; }
-        return tileId_.lod;
+        return (tileId_.lod >= setup.maxLod);
     }
 
     double scale(const Setup &setup) const {
         if (bottom(setup)) { return 1.0; }
-        return 1 << (setup.maxLod - tileId_.lod - 1);
+        return 1 << (setup.maxLod - tileId_.lod);
     }
 
     list children_;
