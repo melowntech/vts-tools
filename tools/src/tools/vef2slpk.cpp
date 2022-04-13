@@ -538,7 +538,8 @@ public:
             node.lodSelection.emplace_back();
             auto &ls(node.lodSelection.back());
             ls.metricType = slpk::MetricType::maxScreenThreshold;
-            ls.maxError = reference.mbs.r / (scale(setup) * setup.resolution);
+            ls.maxError = ((2.0 * reference.mbs.r)
+                           / (scale(setup) * setup.resolution));
         }
 
         // cross-reference children (N^2)
