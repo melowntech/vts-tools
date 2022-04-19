@@ -6,6 +6,7 @@ core
 vgcore.*
 obj-x86_64-linux-gnu
 output
+slpk
 .gdb_history
 *.log
 cmake-build-debug

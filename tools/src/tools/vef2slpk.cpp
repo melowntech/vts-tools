@@ -163,6 +163,7 @@ std::ostream& SrsOverride::dump(std::ostream &os, const std::string &prefix)
 struct Config {
     int textureQuality;
     math::Size2 optimalTextureSize;
+    int binaryOrder = -1;
     std::string layerName;
     boost::optional<std::string> alias;
     boost::optional<std::string> copyrightText;
@@ -206,8 +207,8 @@ private:
 
     int run() override;
 
-    fs::path input_;
     fs::path output_;
+    std::vector<fs::path> input_;
 
     bool overwrite_;
     Config config_;
@@ -219,10 +220,10 @@ void Vef2Slpk::configuration(po::options_description &cmdline
                              , po::positional_options_description &pd)
 {
     cmdline.add_options()
-        ("input", po::value(&input_)->required()
-         , "Path to input VEF archive.")
         ("output", po::value(&output_)->required()
          , "Path to output SLPK file.")
+        ("input", po::value(&input_)->required()
+         , "Path to input VEF archive(s).")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("textureQuality", po::value(&config_.textureQuality)
@@ -238,6 +239,11 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          ->default_value(config_.optimalTextureSize)->required()
          , "Size of ideal tile texture. Used to calculate fitting LOD from"
          "mesh texel size. Do not modify.")
+
+        ("binaryOrder", po::value(&config_.binaryOrder)
+         ->default_value(config_.binaryOrder)->required()
+         , "Size of tilar archive (2^binary order * 2^binary order tiles). "
+         "Value <0 uses tilar's built-in default.")
 
         ("fuseSubmeshes", po::value(&config_.fuseSubmeshes)
          ->default_value(config_.fuseSubmeshes)->required()
@@ -267,8 +273,8 @@ void Vef2Slpk::configuration(po::options_description &cmdline
     vt::progressConfiguration(config);
 
     pd
-        .add("input", 1)
         .add("output", 1)
+        .add("input", -1)
         ;
 
     (void) config;
@@ -312,7 +318,6 @@ usage
 struct Setup {
     slpk::SpatialReference spatialReference;
     math::Extents2 workExtents;
-    geo::SrsDefinition srcSrs;
     geo::SrsDefinition workSrs;
     geo::SrsDefinition dstSrs;
     geo::CsConvertor work2dst;
@@ -326,12 +331,14 @@ struct Setup {
     void configuration(const std::string&, po::options_description &od);
     void configure(const std::string&, po::variables_map) {}
 
-    boost::optional<geo::SrsDefinition> cutSrs() const;
+    boost::optional<geo::SrsDefinition>
+    cutSrs(const geo::SrsDefinition &srs) const;
 };
 
-boost::optional<geo::SrsDefinition> Setup::cutSrs() const
+boost::optional<geo::SrsDefinition>
+Setup::cutSrs(const geo::SrsDefinition &srs) const
 {
-    if (geo::areSame(srcSrs, workSrs)) { return boost::none; }
+    if (geo::areSame(srs, workSrs)) { return boost::none; }
     return workSrs;
 }
 
@@ -340,7 +347,6 @@ void Setup::save(std::ostream &os) const
     // TODO: save spatialReference
     os << std::fixed << std::setprecision(15)
        << "workExtents = " << workExtents
-       << "\nsrcSrs = " << srcSrs
        << "\nworkSrs = " << workSrs
        << "\ndstSrs = " << dstSrs
        << "\nmaxLod = " << maxLod
@@ -354,7 +360,6 @@ void Setup::configuration(const std::string&, po::options_description &od)
     // TODO: load spatialReference
     od.add_options()
         ("workExtents", po::value(&workExtents), "workExtents")
-        ("srcSrs", po::value(&srcSrs), "srcSrs")
         ("workSrs", po::value(&workSrs), "workSrs")
         ("dstSrs", po::value(&dstSrs), "dstSrs")
         ("maxLod", po::value(&maxLod), "maxLod")
@@ -377,36 +382,38 @@ void writeSetup(const fs::path &file, const Setup &setup)
     fs::rename(tmp, file);
 }
 
-vef::Tiling makeTiling(const Config &config, const vef::Archive &archive)
+vef::Tiling makeTiling(const Config &config
+                       , const vef::Archive::list &archives)
 {
+    const auto &inputSrs(archives.front().manifest().srs.value());
+
     switch (config.workSrs.source) {
     case SrsOverride::Source::default_:
-        return vef::Tiling(archive, config.optimalTextureSize);
+        return vef::Tiling(archives, config.optimalTextureSize);
 
     case SrsOverride::Source::input:
         return vef::Tiling
-            (archive, config.optimalTextureSize
+            (archives, config.optimalTextureSize
              , false, boost::none
-             , vef::World(archive.manifest().srs.value()
-                          , math::Extents3(math::InvalidExtents{})));
+             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{})));
 
     case SrsOverride::Source::custom:
         return vef::Tiling
-            (archive, config.optimalTextureSize
+            (archives, config.optimalTextureSize
              , false, boost::none
-             , vef::World(config.workSrs.srs.value()
-                          , math::Extents3(math::InvalidExtents{})));
+             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{})));
     }
 
     throw; // never reached
 }
 
-Setup makeSetup(Config &config, const vef::Archive &archive)
+Setup makeSetup(Config &config, const vef::Archive::list &archives)
 {
-    auto tiling(makeTiling(config, archive));
+    auto tiling(makeTiling(config, archives));
+
+    const auto &inputSrs(archives.front().manifest().srs.value());
 
     Setup setup;
-    setup.srcSrs = archive.manifest().srs.value();
     setup.workExtents = math::extents2(tiling.workExtents);
     setup.workSrs = tiling.workSrs;
     setup.maxLod = tiling.maxLod;
@@ -419,7 +426,7 @@ Setup makeSetup(Config &config, const vef::Archive &archive)
         break;
 
     case SrsOverride::Source::input:
-        setup.spatialReference.setSrs(setup.srcSrs);
+        setup.spatialReference.setSrs(inputSrs);
         break;
 
     case SrsOverride::Source::custom:
@@ -973,30 +980,38 @@ int Vef2Slpk::run()
     // TODO: check output existence
 
     const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
-    tools::TmpTileset ts(tmpTilesetPath, !config_.resume);
+    tools::TmpTileset ts(tmpTilesetPath, !config_.resume, config_.binaryOrder);
     ts.keep(config_.keepTmpset);
-
-    // load input manifests
-    vef::Archive input(input_);
-    if (!input.manifest().srs) {
-        LOG(fatal)
-            << "VEF archive " << input_
-            << " doesn't have assigned an SRS, cannot proceed.";
-        return EXIT_FAILURE;
-    }
 
     // measure mesh extents
     Setup setup;
     if (!config_.resume) {
+        // load input manifests
+        vef::Archive::list input;
+        input.reserve(input_.size());
+
+        // load input manifests
+        for (const auto &path : input_) {
+            input.emplace_back(path);
+            if (!input.back().manifest().srs) {
+                LOG(fatal)
+                    << "VEF archive " << path
+                    << " doesn't have assigned an SRS, cannot proceed.";
+                return EXIT_FAILURE;
+            }
+        }
+
         LOG(info3) << "Analyzing input...";
         // not resuming, cut tiles
         setup = makeSetup(config_, input);
         LOG(info3) << "Analyzing input... done.";
 
-        // cu to tiles
-        vef::cutToTiles(ts, input, setup.workExtents
-                        , setup.cutSrs()
-                        , setup.maxLod, config_.clipMargin);
+        for (const auto &archive : input) {
+            // cut to tiles
+            vef::cutToTiles(ts, archive, setup.workExtents
+                            , setup.cutSrs(archive.manifest().srs.value())
+                            , setup.maxLod, config_.clipMargin);
+        }
 
         // save setup
         writeSetup(tmpTilesetPath / "setup.conf", setup);

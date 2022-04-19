@@ -258,7 +258,7 @@ void Vef2Vts::configuration(po::options_description &cmdline
         ("output", po::value(&output_)->required()
          , "Path to output (vts) tile set.")
         ("input", po::value(&input_)->required()
-         , "Path to input VEF archive.")
+         , "Path to input VEF archive(s.")
         ("overwrite", "Existing tile set gets overwritten if set.")
         ;
 
