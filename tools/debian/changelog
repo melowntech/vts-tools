@@ -1,3 +1,9 @@
+vts-tools (1.101) stable; urgency=medium
+
+  * convertors may create files >4GB
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 21 Apr 2022 10:32:15 +0200
+
 vts-tools (1.100) stable; urgency=medium
 
   * vef2slpk: properly computing LodSelection
