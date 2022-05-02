@@ -226,7 +226,7 @@ void Vef2Slpk::configuration(po::options_description &cmdline
     cmdline.add_options()
         ("output", po::value(&output_)->required()
          , "Path to output SLPK file.")
-        ("input", po::value(&input_)->required()
+        ("input", po::value(&input_)
          , "Path to input VEF archive(s).")
         ("tmptsPath", po::value(&tmptsPath_)
          , "Path to temporary tileset, defautls to output + \".tmpts\".")
@@ -304,6 +304,16 @@ void Vef2Slpk::configure(const po::variables_map &vars)
 
     if (!vars.count("tmptsPath")) {
         tmptsPath_ = utility::addExtension(output_, ".tmpts");
+    }
+
+    if (!config_.resume && input_.empty()) {
+        throw po::required_option("input");
+    }
+
+    if (config_.resume) {
+        if (!input_.empty()) {
+            LOG(warn2) << "NB: input ignored when resuming.";
+        }
     }
 
     LOG(info3)
@@ -1027,7 +1037,7 @@ int Vef2Slpk::run()
         writeSetup(tmptsPath_ / "setup.conf", setup);
     } else {
         // (try to) resume
-        LOG(info3) << "Resuming.";
+        LOG(info3) << "Resuming from " << tmptsPath_ << ".";
         setup = readSetup(tmptsPath_ / "setup.conf");
         // TODO: check for the same SRS etc.
     }
