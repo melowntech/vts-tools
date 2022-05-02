@@ -56,6 +56,8 @@
 #include "utility/stl-helpers.hpp"
 #include "utility/config.hpp"
 
+#include "utility/zip.hpp"
+
 #include "service/cmdline.hpp"
 #include "service/verbosity.hpp"
 
@@ -210,6 +212,8 @@ private:
     fs::path output_;
     std::vector<fs::path> input_;
 
+    fs::path tmptsPath_;
+
     bool overwrite_;
     Config config_;
     vt::ExternalProgress::Config epConfig_;
@@ -224,6 +228,8 @@ void Vef2Slpk::configuration(po::options_description &cmdline
          , "Path to output SLPK file.")
         ("input", po::value(&input_)->required()
          , "Path to input VEF archive(s).")
+        ("tmptsPath", po::value(&tmptsPath_)
+         , "Path to temporary tileset, defautls to output + \".tmpts\".")
         ("overwrite", "Existing tile set gets overwritten if set.")
 
         ("textureQuality", po::value(&config_.textureQuality)
@@ -295,6 +301,10 @@ void Vef2Slpk::configure(const po::variables_map &vars)
 
     config_.workSrs.configure(vars);
     config_.dstSrs.configure(vars);
+
+    if (!vars.count("tmptsPath")) {
+        tmptsPath_ = utility::addExtension(output_, ".tmpts");
+    }
 
     LOG(info3)
         << "Configuration:\n"
@@ -977,10 +987,10 @@ void Generator::operator()(/**vt::ExternalProgress &progress*/)
 
 int Vef2Slpk::run()
 {
-    // TODO: check output existence
+    // First, open output zip file to be sure the precondition is met
+    utility::zip::Writer zip(output_, overwrite_ || config_.resume);
 
-    const auto tmpTilesetPath(utility::addExtension(output_, ".tmpts"));
-    tools::TmpTileset ts(tmpTilesetPath, !config_.resume, config_.binaryOrder);
+    tools::TmpTileset ts(tmptsPath_, !config_.resume, config_.binaryOrder);
     ts.keep(config_.keepTmpset);
 
     // measure mesh extents
@@ -1014,17 +1024,17 @@ int Vef2Slpk::run()
         }
 
         // save setup
-        writeSetup(tmpTilesetPath / "setup.conf", setup);
+        writeSetup(tmptsPath_ / "setup.conf", setup);
     } else {
         // (try to) resume
         LOG(info3) << "Resuming.";
-        setup = readSetup(tmpTilesetPath / "setup.conf");
+        setup = readSetup(tmptsPath_ / "setup.conf");
         // TODO: check for the same SRS etc.
     }
 
     // output file
-    slpk::Writer writer(output_, {}, makeSceneLayerInfo(config_, setup)
-                        , overwrite_);
+    slpk::Writer writer(std::move(zip)
+                        , {}, makeSceneLayerInfo(config_, setup));
 
     Generator(writer, ts, config_, setup)(/* progress */);
 
