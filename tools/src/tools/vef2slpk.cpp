@@ -364,7 +364,6 @@ Setup::cutSrs(const geo::SrsDefinition &srs) const
 
 void Setup::save(std::ostream &os) const
 {
-    // TODO: save spatialReference
     os << std::fixed << std::setprecision(15)
        << "workExtents = " << workExtents
        << "\nworkSrs = " << workSrs
@@ -372,18 +371,43 @@ void Setup::save(std::ostream &os) const
        << "\nmaxLod = " << maxLod
        << "\nresolution = " << resolution
        << "\n"
+       << "\nspatialReference.wkid = " << spatialReference.wkid
+       << "\nspatialReference.latestWkid = " << spatialReference.latestWkid
+       << "\nspatialReference.vcsWkid = " << spatialReference.vcsWkid
+       << "\nspatialReference.latestVcsWkid = "
+       << spatialReference.latestVcsWkid
+       << "\nspatialReference.wkt = " << spatialReference.wkt
+       << "\n"
         ;
 }
-
+ 
 void Setup::configuration(const std::string&, po::options_description &od)
 {
-    // TODO: load spatialReference
     od.add_options()
-        ("workExtents", po::value(&workExtents), "workExtents")
-        ("workSrs", po::value(&workSrs), "workSrs")
-        ("dstSrs", po::value(&dstSrs), "dstSrs")
-        ("maxLod", po::value(&maxLod), "maxLod")
-        ("resolution", po::value(&resolution), "resolution")
+        ("workExtents", po::value(&workExtents)->required()
+         , "workExtents")
+        ("workSrs", po::value(&workSrs)->required()
+         , "workSrs")
+        ("dstSrs", po::value(&dstSrs)->required()
+         , "dstSrs")
+        ("maxLod", po::value(&maxLod)->required(), "maxLod")
+        ("resolution", po::value(&resolution)->required(), "resolution")
+
+        ("spatialReference.wkid"
+         , po::value(&spatialReference.wkid)->required()
+         , "nspatialReference.wkid")
+        ("spatialReference.latestWkid",
+         po::value(&spatialReference.latestWkid)->required()
+         , "nspatialReference.latestWkid")
+        ("spatialReference.vcsWkid"
+         , po::value(&spatialReference.vcsWkid)->required()
+         , "nspatialReference.vcsWkid")
+        ("spatialReference.latestVcsWkid"
+         , po::value(&spatialReference.latestVcsWkid)->required()
+         , "nspatialReference.latestVcsWkid")
+        ("spatialReference.wkt"
+         , po::value(&spatialReference.wkt)->required()
+         , "nspatialReference.wkt")
         ;
 }
 
@@ -810,8 +834,6 @@ void write(slpk::Writer &writer
 {
     int smi(0);
     for (const auto &sm : mesh) {
-        std::ostringstream os;
-        atlas.write(os, smi);
         writer.write(node, sharedResource
                      , MeshSaver(node, sm), TextureSaver(atlas, smi));
         ++smi;
