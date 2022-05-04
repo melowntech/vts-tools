@@ -1,3 +1,9 @@
+vts-tools (1.102) stable; urgency=medium
+
+  * vef2slpk: Optimized a bit
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 04 May 2022 10:14:49 +0200
+
 vts-tools (1.101) stable; urgency=medium
 
   * convertors may create files >4GB
