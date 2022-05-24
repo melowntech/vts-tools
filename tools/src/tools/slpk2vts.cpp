@@ -326,7 +326,7 @@ tools::LodInfo analyze(vt::ExternalProgress &progress
     lodInfo.bottomDepth = -1;
 
     {
-        for (const auto item : tree.nodes) {
+        for (const auto &item : tree.nodes) {
             const auto &node(item.second.node);
             if (!node.hasGeometry()) { continue; }
             if (node.children.empty()) {
