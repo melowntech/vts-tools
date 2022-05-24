@@ -39,7 +39,7 @@ find_package(JsonCPP REQUIRED)
 include_directories(${JSONCPP_INCLUDE_DIRS})
 
 find_package(Eigen3 REQUIRED)
-include_directories(${EIGEN3_INCLUDE_DIR})
+include_directories(SYSTEM ${EIGEN3_INCLUDE_DIR})
 
 # Asset import library for loading mesh files in lodtree2vts
 # (get it with 'apt-get install libassimp-dev')
