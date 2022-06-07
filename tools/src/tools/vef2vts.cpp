@@ -1006,7 +1006,7 @@ cv::Mat Cutter::loadTexture(const fs::path &path) const
 void Cutter::cut(const Assignment::maplist &assignments)
 {
     std::size_t manifestWindowsSize(manifest_.windows.size());
-    UTILITY_OMP(parallel for)
+    UTILITY_OMP(parallel for schedule(dynamic, 1))
         for (std::size_t i = 0; i < manifestWindowsSize; ++i) {
             const auto &loddedWindow(manifest_.windows[i]);
             auto &assignment(assignments[i]);
