@@ -6,7 +6,7 @@ set(common_DEPENDS
 # ------------------------------------------------------------------------
 # vef2vts tool
 define_module(BINARY vef2vts
-  DEPENDS ${common_DEPENDS} vef>=1.6)
+  DEPENDS ${common_DEPENDS} vef>=1.8)
 set(vef2vts_SOURCES
   vef2vts.cpp)
 

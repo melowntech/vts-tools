@@ -55,6 +55,10 @@ include_directories(${TINYXML2_INCLUDE_DIR})
 find_package(Protobuf REQUIRED)
 include_directories(${PROTOBUF_INCLUDE_DIRS})
 
+find_package(OpenMesh 2.3.1 REQUIRED)
+include_directories(${OPENMESH_INCLUDE_DIR})
+link_directories(${OPENMESH_LIBRARY_DIR})
+
 # dependencies
 add_subdirectory(src/dbglog)
 add_subdirectory(src/utility)

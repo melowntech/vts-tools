@@ -81,6 +81,9 @@
 #include "vef/reader.hpp"
 #include "vef/tiling.hpp"
 #include "vef/tilecutter.hpp"
+#include "vef/25d.hpp"
+#include "vef/25d.po.hpp"
+
 #include "slpk/writer.hpp"
 #include "miniball/miniball.hpp"
 
@@ -179,6 +182,8 @@ struct Config {
     SrsOverride workSrs = SrsOverride("workSrs");
     SrsOverride dstSrs = SrsOverride("dstSrs");
 
+    vef::Config25d c25d;
+
     Config()
         : textureQuality(85), optimalTextureSize(256, 256)
         , fuseSubmeshes(true)
@@ -276,6 +281,9 @@ void Vef2Slpk::configuration(po::options_description &cmdline
     config_.workSrs.configuration(cmdline);
     config_.dstSrs.configuration(cmdline);
 
+    // 2.5D support configuration
+    config_.c25d.configuration(cmdline);
+
     vt::progressConfiguration(config);
 
     pd
@@ -315,6 +323,8 @@ void Vef2Slpk::configure(const po::variables_map &vars)
             LOG(warn2) << "NB: input ignored when resuming.";
         }
     }
+
+    config_.c25d.configure(vars);
 
     LOG(info3)
         << "Configuration:\n"
@@ -433,19 +443,23 @@ vef::Tiling makeTiling(const Config &config
 
     switch (config.workSrs.source) {
     case SrsOverride::Source::default_:
-        return vef::Tiling(archives, config.optimalTextureSize);
+        return vef::Tiling(archives, config.optimalTextureSize
+                           , false, boost::none, boost::none
+                           , config.c25d.extraLods);
 
     case SrsOverride::Source::input:
         return vef::Tiling
             (archives, config.optimalTextureSize
              , false, boost::none
-             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{})));
+             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{}))
+             , config.c25d.extraLods);
 
     case SrsOverride::Source::custom:
         return vef::Tiling
             (archives, config.optimalTextureSize
              , false, boost::none
-             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{})));
+             , vef::World(inputSrs, math::Extents3(math::InvalidExtents{}))
+             , config.c25d.extraLods);
     }
 
     throw; // never reached
@@ -1047,6 +1061,29 @@ int Vef2Slpk::run()
         // not resuming, cut tiles
         setup = makeSetup(config_, input);
         LOG(info3) << "Analyzing input... done.";
+
+        if (config_.c25d.extraLods) {
+            vef::Archive::list lowresInput;
+            int index(0);
+            for (const auto &i : input) {
+                LOG(info3) << "Generating low-res data from "
+                           << i.path() << ".";
+                // generate 2.5D data
+                const auto lowresData
+                    (tmptsPath_ / "25d"
+                     / boost::lexical_cast<std::string>(index));
+                vef::generate25d(lowresData, i
+                                 , config_.c25d.extraLodsSourceLod
+                                 , config_.c25d.extraLods
+                                 , setup.resolution
+                                 , config_.c25d.tweak_generateExtraLodsFrom);
+                lowresInput.emplace_back(lowresData);
+                ++index;
+            }
+
+            input.insert
+                (input.end(), lowresInput.begin(), lowresInput.end());
+        }
 
         for (const auto &archive : input) {
             // cut to tiles
