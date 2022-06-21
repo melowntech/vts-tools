@@ -1,3 +1,9 @@
+vts-tools (1.104) stable; urgency=medium
+
+  * vef2slpk: incorporated 2.5 support
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Tue, 21 Jun 2022 11:06:16 +0200
+
 vts-tools (1.103) stable; urgency=medium
 
   * vef2vts: parallel window cutting using dynamic scheduling
