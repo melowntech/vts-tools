@@ -1,3 +1,9 @@
+vts-tools (1.105) stable; urgency=medium
+
+  * vef2slpk: fixed 2.5 support
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 24 Jun 2022 13:58:15 +0200
+
 vts-tools (1.104) stable; urgency=medium
 
   * vef2slpk: incorporated 2.5 support
