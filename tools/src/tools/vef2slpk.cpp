@@ -336,9 +336,9 @@ void Vef2Slpk::configure(const po::variables_map &vars)
 bool Vef2Slpk::help(std::ostream &out, const std::string &what) const
 {
     if (what.empty()) {
-        out << R"RAW(vef2vts
+        out << R"RAW(vef2slpk
 usage
-    vef2vts INPUT OUTPUT [OPTIONS]
+    vef2slpk OUTPUT INPUT+ [OPTIONS]
 
 )RAW";
     }
