@@ -296,6 +296,10 @@ void Vef2Slpk::configuration(po::options_description &cmdline
 
 void Vef2Slpk::configure(const po::variables_map &vars)
 {
+    if (config_.layerName.empty()) {
+        config_.layerName = output_.stem().string();
+    }
+
     overwrite_ = vars.count("overwrite");
     config_.resume = vars.count("resume");
     config_.keepTmpset = vars.count("keepTmpset");
