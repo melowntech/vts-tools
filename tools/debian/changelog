@@ -1,3 +1,9 @@
+vts-tools (1.107) stable; urgency=medium
+
+  * vts/add: using configuration from storage/merge.conf for temporary remote tileset creation -> proper cnames are applied as during the actual merge
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Wed, 01 Feb 2023 13:24:45 +0100
+
 vts-tools (1.106) stable; urgency=medium
 
   * SLPK: Fixed metadata and 3D Scene Lyaer generation
