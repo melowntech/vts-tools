@@ -273,6 +273,7 @@ private:
 
 // ------------------------------------------------------------------------
 
+UTILITY_MAYBE_UNUSED
 void remapTcToRegion(vts::SubMesh &sm, const vts::FaceOriginList &faceOrigin
                      , const RegionInfo &ri)
 {

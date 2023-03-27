@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.3)
 project(vts-tools)
 # by default, this is OSS build (can be overrided by customer machinery)
 set(BUILDSYS_DEFAULT_CUSTOMER_NAME oss)
-set(BUILDSYS_CPP_STANDARD 14)
+set(BUILDSYS_CPP_STANDARD 17)
 
 include(buildsys/cmake/buildsys.cmake)
 

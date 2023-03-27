@@ -281,6 +281,7 @@ private:
     Images images_;
 };
 
+UTILITY_MAYBE_UNUSED
 void addImage(vts::RawAtlas &atlas, const gltf::DataView &data
               , const std::string&)
 {
