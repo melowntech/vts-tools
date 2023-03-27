@@ -1,6 +1,6 @@
 set(common_DEPENDS
-  dbglog>=1.4 vts-libs>=2.21 service>=1.7 geo>=1.34
-  vts-libs-tools-support>=2.10
+  dbglog>=1.4 vts-libs>=2.23 service>=1.7 geo>=1.34
+  vts-libs-tools-support>=2.23
   )
 
 # ------------------------------------------------------------------------
@@ -42,7 +42,7 @@ buildsys_binary(lodtree2vts)
 # ------------------------------------------------------------------------
 # slpk2vts tool
 define_module(BINARY slpk2vts
-  DEPENDS ${common_DEPENDS} slpk>=1.3)
+  DEPENDS ${common_DEPENDS} slpk>=1.5)
 set(slpk2vts_SOURCES
   slpk2vts.cpp)
 
