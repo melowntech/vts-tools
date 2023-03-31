@@ -1,0 +1,17 @@
+m4_dnl ###############################################################
+m4_dnl ## Build dependencies
+m4_dnl ###############################################################
+m4_dnl
+m4_define({{{VAR_BuildDepends}}},{{{debhelper (>= 12.1), devscripts
+    , libboost-all-dev
+    , libopencv-core-dev (>= 4.2.0)
+    , libopencv-highgui-dev (>= 4.2.0)
+    , libopencv-photo-dev (>= 4.2.0)
+    , libopencv-imgproc-dev (>= 4.2.0)
+    , libeigen3-dev (>= 3.3.7)
+    , libgdal-dev (>= 3.0), libproj-dev (>= 6.0)
+    , libgeographic-dev (>= 1.50)
+    , libjsoncpp-dev (>= 1.7.4)
+    , libmagic-dev (>= 5.38)
+    , libcurl4-openssl-dev (>= 7.68)
+    , gawk, cmake}}})m4_dnl
