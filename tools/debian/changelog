@@ -1,3 +1,9 @@
+vts-tools (1.108) stable; urgency=medium
+
+  * vef2vts: navtile computation fixed
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Fri, 28 Apr 2023 17:06:17 +0200
+
 vts-tools (1.107) stable; urgency=medium
 
   * vts/add: using configuration from storage/merge.conf for temporary remote tileset creation -> proper cnames are applied as during the actual merge
