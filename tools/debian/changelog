@@ -1,3 +1,9 @@
+vts-tools (1.110) stable; urgency=medium
+
+  * Using updated vts-libs: fixed mask generation in texturing
+
+ -- Vaclav Blazek <vaclav.blazek@melown.com>  Thu, 22 Jun 2023 13:01:49 +0200
+
 vts-tools (1.109) stable; urgency=medium
 
   * vef2skpk: fixed memory error in heighmodel detection
